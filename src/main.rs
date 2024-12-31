@@ -6,6 +6,8 @@ use blind_rsa_signatures::{KeyPair, SecretKey};
 use collectors::{BuyGasTicketsParser, Collector, NativeTransfersParser, SendGasTicketsParser};
 use alloy::primitives::Address;
 use alloy::providers::{ProviderBuilder, WsConnect};
+use alloy::contract::{ContractInstance, Interface};
+use alloy::json_abi::JsonAbi;
 use sqlx::PgPool;
 use std::env;
 use tokio;
@@ -14,6 +16,7 @@ use crate::rsasigner::BlindSigner;
 use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use crate::keyencoder::{encode_public_key_to_hex, decode_hex_to_public_key};
+use hex;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -45,15 +48,6 @@ async fn main() -> anyhow::Result<()> {
     let pk = sk.public_key().expect("Failed to get public key");
     
     let hex1 = encode_public_key_to_hex(&pk);
-    println!("hex: {}", hex1);
-
-    let pk_check = decode_hex_to_public_key(&hex1);
-    println!("pk1: {}", pk_check.to_pem()?);
-    println!("pk2: {}", pk.to_pem()?);
-    println!("check: {}", pk_check==pk);
-    
-    let key_pair = KeyPair { pk, sk };
-    let signer = Arc::new(BlindSigner::new(key_pair));
 
     // Connect to the PostgreSQL database
     let db_pool = PgPool::connect(&database_url).await?;
@@ -61,6 +55,38 @@ async fn main() -> anyhow::Result<()> {
 
     let ws = WsConnect::new(rpc_url);
     let provider = ProviderBuilder::new().on_ws(ws).await?;
+
+    let abi = JsonAbi::parse(   
+        ["function coordinatorPubKey() external view returns (bytes memory)"]
+    ).expect("Failed to parse ABI");
+
+    // Create a contract instance to call coordinatorPubKey()
+    let contract = ContractInstance::new(
+        contract_address,
+        provider.clone(),
+        Interface::new(abi)
+    );
+
+    // Make the static call to get the coordinator's public key
+    let contract_pubkey_val = contract
+        .function("coordinatorPubKey", &[])
+        .expect("Failed to create method call")
+        .call()
+        .await
+        .expect("Failed to call coordinatorPubKey");
+    let contract_pubkey = contract_pubkey_val[0]
+        .as_bytes()
+        .expect("Expected bytes output");
+    let contract_pubkey_hex = "0x".to_string() + &hex::encode(contract_pubkey);
+    
+    // Decode the contract's public key and compare
+    let contract_pk = decode_hex_to_public_key(&contract_pubkey_hex);
+    if contract_pk != pk || contract_pubkey_hex != hex1 {
+        panic!("env rsa key does not match onchain rsa pubkey");
+    }
+
+    let key_pair = KeyPair { pk, sk };
+    let signer = Arc::new(BlindSigner::new(key_pair));
     
     // Create collectors for each event type
     let buy_gas_tickets_collector = Collector::new(

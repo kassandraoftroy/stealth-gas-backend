@@ -94,7 +94,6 @@ impl<T: EventParser> Collector<T> {
         let logs = self.provider.get_logs(&filter).await?;
         for log in logs {
             let event_data = self.parser.parse_event(log.clone());
-            println!("Historical event data: {}", event_data);
             if !event_data.is_null() {
                 self.store_event(log, event_data).await;
             }
@@ -130,7 +129,6 @@ impl<T: EventParser> Collector<T> {
                 let logs = self.provider.get_logs(&filter).await?;
                 for log in logs {
                     let event_data = self.parser.parse_event(log.clone());
-                    println!("Polled event data: {}", event_data);
 
                     if !event_data.is_null() {
                         self.store_event(log, event_data).await;
