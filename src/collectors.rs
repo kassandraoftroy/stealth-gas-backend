@@ -10,7 +10,8 @@ use alloy::{
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
-// use futures_util::StreamExt;
+use crate::rsasigner::BlindSigner;
+use sha2::{Digest, Sha256};
 
 #[derive(Clone)]
 pub struct Collector<T: EventParser> {
@@ -55,12 +56,13 @@ impl<T: EventParser> Collector<T> {
         }
     }
 
-    pub fn filter(&self) -> &Filter {
-        &self.filter
-    }
-    pub fn provider(&self) -> &Arc<RootProvider<PubSubFrontend>> {
-        &self.provider
-    }
+    // pub fn filter(&self) -> &Filter {
+    //     &self.filter
+    // }
+    // pub fn provider(&self) -> &Arc<RootProvider<PubSubFrontend>> {
+    //     &self.provider
+    // }
+    
     pub fn event_topic(&self) -> B256 {
         self.parser.event_topic()
     }
@@ -92,7 +94,6 @@ impl<T: EventParser> Collector<T> {
         let logs = self.provider.get_logs(&filter).await?;
         for log in logs {
             let event_data = self.parser.parse_event(log.clone());
-            println!("Historical event data: {}", event_data);
             if !event_data.is_null() {
                 self.store_event(log, event_data).await;
             }
@@ -128,7 +129,6 @@ impl<T: EventParser> Collector<T> {
                 let logs = self.provider.get_logs(&filter).await?;
                 for log in logs {
                     let event_data = self.parser.parse_event(log.clone());
-                    println!("Polled event data: {}", event_data);
 
                     if !event_data.is_null() {
                         self.store_event(log, event_data).await;
@@ -179,7 +179,16 @@ struct BuyGasTicketsEvent {
     signed: Vec<Bytes>,
     ids: Vec<Bytes>,
 }
-pub struct BuyGasTicketsParser;
+pub struct BuyGasTicketsParser {
+    signer: Arc<BlindSigner>,
+}
+
+impl BuyGasTicketsParser {
+    pub fn new(signer: Arc<BlindSigner>) -> Self {
+        Self { signer }
+    }
+}
+
 impl EventParser for BuyGasTicketsParser {
     fn event_topic(&self) -> B256 {
         IStealthGasStation::BuyGasTickets::SIGNATURE_HASH
@@ -192,11 +201,27 @@ impl EventParser for BuyGasTicketsParser {
     fn parse_event(&self, log: Log) -> serde_json::Value {
         match log.log_decode::<IStealthGasStation::BuyGasTickets>() {
             Ok(decoded_log) => {
-                let event = BuyGasTicketsEvent {
-                    blinded: decoded_log.inner.blinded.clone(),
-                    signed: vec![],
-                    ids: vec![],
+                // Blind message signing
+                let blinded_messages = decoded_log.inner.blinded.clone();
+                let signed_blind_msgs = match self.signer.sign_blinded_messages(blinded_messages.clone()) {
+                    Ok(msgs) => msgs,
+                    Err(e) => {
+                        eprintln!("Failed to sign blinded messages: {}", e);
+                        return serde_json::Value::Null;
+                    }
                 };
+                let message_ids = blinded_messages
+                    .iter()
+                    .map(|msg| Bytes::from(Sha256::digest(msg).to_vec()))
+                    .collect::<Vec<_>>();
+
+                // Populate event data
+                let event = BuyGasTicketsEvent {
+                    blinded: blinded_messages,
+                    signed: signed_blind_msgs,
+                    ids: message_ids,
+                };
+
                 serde_json::to_value(event).unwrap_or(serde_json::Value::Null)
             }
             Err(e) => {
