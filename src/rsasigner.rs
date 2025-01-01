@@ -16,22 +16,28 @@ impl BlindSigner {
         }
     }
 
-    pub fn sign_blinded_messages(&self, blinded_messages: Vec<Bytes>) -> Result<Vec<Bytes>, String> {
-        let rng = &mut thread_rng();
-        
-        // Process all messages, fail fast on any error
-        let signed_messages = blinded_messages.into_iter()
-            .map(|blind_msg| {
-                let blind_msg_slice: &[u8] = blind_msg.as_ref();
-                self.key_pair
-                    .sk
-                    .blind_sign(rng, blind_msg_slice, &self.options)
-                    .map(|sig| Bytes::from(sig.to_vec()))
-                    .map_err(|e| format!("Failed to sign blinded message: {}", e))
+    pub fn sign_blinded_message<R: rand::RngCore + rand::CryptoRng>(
+        &self,
+        rng: &mut R,
+        blinded_message: Bytes,
+    ) -> Result<Bytes, String> {
+        let blind_msg_slice: &[u8] = blinded_message.as_ref();
+        self.key_pair
+            .sk
+            .blind_sign(rng, blind_msg_slice, &self.options)
+            .map(|sig| Bytes::from(sig.to_vec()))
+            .map_err(|e| format!("Failed to sign blinded message: {}", e))
+    }
+
+    pub fn sign_blinded_messages_filtered(&self, blinded_messages: Vec<Bytes>) -> (Vec<Bytes>, Vec<Bytes>) {
+        let mut rng = thread_rng();
+        blinded_messages.into_iter()
+            .filter_map(|msg| {
+                self.sign_blinded_message(&mut rng, msg.clone())
+                    .ok()
+                    .map(|signature| (msg, signature))
             })
-            .collect::<Result<Vec<Bytes>, String>>()?;
-        
-        Ok(signed_messages)
+            .unzip()
     }
 
     // pub fn verify_unblinded_signature(&self, msg_randomizer: &[u8], msg: &[u8], signature: Bytes) -> bool {
