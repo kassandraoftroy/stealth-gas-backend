@@ -145,6 +145,7 @@ impl<T: EventParser> Collector<T> {
     }
 
     async fn store_event(&self, log: Log, event_data: serde_json::Value) {
+        println!("[UPSERT event] :: {:?}", log.transaction_hash.unwrap_or_default());
         let query = "INSERT INTO events (removed, event_topic, event_kind, event_state, block_number, block_timestamp, transaction_hash, transaction_index, log_index, event_data) 
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                      ON CONFLICT (transaction_hash, log_index)
@@ -174,10 +175,23 @@ impl<T: EventParser> Collector<T> {
 
 // Define Parsers for the events
 #[derive(Serialize, Deserialize)]
-struct BuyGasTicketsEvent {
+struct BuyGasTicketsLog {
+    blinded: Vec<Bytes>,
+}
+
+// Define Parsers for the events
+#[derive(Serialize, Deserialize)]
+struct BuyGasTicketsProcessed {
     blinded: Vec<Bytes>,
     signed: Vec<Bytes>,
     ids: Vec<Bytes>,
+}
+
+// Define Parsers for the events
+#[derive(Serialize, Deserialize)]
+struct BuyGasTicketsEvent {
+    log_data: BuyGasTicketsLog,
+    processed_data: BuyGasTicketsProcessed,
 }
 pub struct BuyGasTicketsParser {
     signer: Arc<BlindSigner>,
@@ -201,31 +215,33 @@ impl EventParser for BuyGasTicketsParser {
     fn parse_event(&self, log: Log) -> serde_json::Value {
         match log.log_decode::<IStealthGasStation::BuyGasTickets>() {
             Ok(decoded_log) => {
-                // Blind message signing
+                println!("[PARSE BuyGasTickets] :: {:?}", log.transaction_hash.unwrap_or_default());
                 let blinded_messages = decoded_log.inner.blinded.clone();
-                let signed_blind_msgs = match self.signer.sign_blinded_messages(blinded_messages.clone()) {
-                    Ok(msgs) => msgs,
-                    Err(e) => {
-                        eprintln!("Failed to sign blinded messages: {}", e);
-                        return serde_json::Value::Null;
-                    }
+                
+                // Create log part
+                let log_data = BuyGasTicketsLog {
+                    blinded: blinded_messages.clone(),
                 };
-                let message_ids = blinded_messages
-                    .iter()
-                    .map(|msg| Bytes::from(Sha256::digest(msg).to_vec()))
-                    .collect::<Vec<_>>();
 
-                // Populate event data
+                let (processed_blinded, processed_signed) = self.signer.sign_blinded_messages_filtered(blinded_messages);
+                let processed_ids = processed_blinded.iter().map(|msg| Bytes::from(Sha256::digest(&msg).to_vec())).collect();
+
+                // Create processed part
+                let processed_data = BuyGasTicketsProcessed {
+                    blinded: processed_blinded,
+                    signed: processed_signed,
+                    ids: processed_ids,
+                };
+
+                // Combine into final event
                 let event = BuyGasTicketsEvent {
-                    blinded: blinded_messages,
-                    signed: signed_blind_msgs,
-                    ids: message_ids,
+                    log_data,
+                    processed_data,
                 };
-
                 serde_json::to_value(event).unwrap_or(serde_json::Value::Null)
             }
-            Err(e) => {
-                eprintln!("Failed to decode BuyGasTickets event: {}", e);
+            Err(_e) => {
+                //eprintln!("Failed to decode BuyGasTickets event: {}", e);
                 serde_json::Value::Null
             }
         }
@@ -233,9 +249,14 @@ impl EventParser for BuyGasTicketsParser {
 }
 
 #[derive(Serialize, Deserialize)]
-struct SendGasTicketsEvent {
+struct SendGasTicketsEventLog {
     ids: Vec<FixedBytes<32>>,
     signed: Vec<Bytes>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SendGasTicketsEvent {
+    log_data: SendGasTicketsEventLog,
 }
 pub struct SendGasTicketsParser;
 
@@ -251,14 +272,17 @@ impl EventParser for SendGasTicketsParser {
     fn parse_event(&self, log: Log) -> serde_json::Value {
         match log.log_decode::<IStealthGasStation::SendGasTickets>() {
             Ok(decoded_log) => {
-                let event = SendGasTicketsEvent {
+                let log_data = SendGasTicketsEventLog {
                     ids: decoded_log.inner.ids.clone(),
                     signed: decoded_log.inner.signed.clone(),
                 };
+                let event = SendGasTicketsEvent {
+                    log_data,
+                };
                 serde_json::to_value(event).unwrap_or(serde_json::Value::Null)
             }
-            Err(e) => {
-                eprintln!("Failed to decode SendGasTickets event: {}", e);
+            Err(_e) => {
+                //eprintln!("Failed to decode SendGasTickets event: {}", e);
                 serde_json::Value::Null
             }
         }
@@ -266,11 +290,17 @@ impl EventParser for SendGasTicketsParser {
 }
 
 #[derive(Serialize, Deserialize)]
-struct NativeTransfersEvent {
+struct NativeTransfersEventLog {
     amounts: Vec<U256>,
     targets: Vec<Address>,
     data: Bytes,
 }
+
+#[derive(Serialize, Deserialize)]
+struct NativeTransfersEvent {
+    log_data: NativeTransfersEventLog,
+}
+
 pub struct NativeTransfersParser;
 
 impl EventParser for NativeTransfersParser {
@@ -285,15 +315,18 @@ impl EventParser for NativeTransfersParser {
     fn parse_event(&self, log: Log) -> serde_json::Value {
         match log.log_decode::<IStealthGasStation::NativeTransfers>() {
             Ok(decoded_log) => {
-                let event = NativeTransfersEvent {
+                let log_data = NativeTransfersEventLog {
                     amounts: decoded_log.inner.amounts.clone(),
                     targets: decoded_log.inner.targets.clone(),
                     data: decoded_log.inner.d.clone(),
                 };
+                let event = NativeTransfersEvent {
+                    log_data,
+                };
                 serde_json::to_value(event).unwrap_or(serde_json::Value::Null)
             }
-            Err(e) => {
-                eprintln!("Failed to decode NativeTransfers event: {}", e);
+            Err(_e) => {
+                //eprintln!("Failed to decode NativeTransfers event: {}", e);
                 serde_json::Value::Null
             }
         }

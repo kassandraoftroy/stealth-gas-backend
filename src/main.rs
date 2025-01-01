@@ -87,7 +87,7 @@ async fn main() -> anyhow::Result<()> {
 
     let key_pair = KeyPair { pk, sk };
     let signer = Arc::new(BlindSigner::new(key_pair));
-    
+
     // Create collectors for each event type
     let buy_gas_tickets_collector = Collector::new(
         provider.clone(),
@@ -112,6 +112,8 @@ async fn main() -> anyhow::Result<()> {
         start_block,
         db_pool.clone(),
     );
+
+    println!("starting coordinator with key: {:?}", contract_pubkey_hex);
 
     // Spawn tasks for each collector
     tokio::spawn(buy_gas_tickets_collector.run());
