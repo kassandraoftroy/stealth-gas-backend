@@ -1,7 +1,6 @@
-use blind_rsa_signatures::{KeyPair, Options, /*Signature, MessageRandomizer*/};
+use blind_rsa_signatures::{KeyPair, Options};
 use alloy::primitives::Bytes;
 use rand::thread_rng;
-//use serde::{Deserialize, Serialize};
 
 pub struct BlindSigner {
     key_pair: KeyPair,
@@ -39,21 +38,4 @@ impl BlindSigner {
             })
             .unzip()
     }
-
-    // pub fn verify_unblinded_signature(&self, msg_randomizer: &[u8], msg: &[u8], signature: Bytes) -> bool {
-    //     let signature_vec: Vec<u8> = signature.to_vec();
-    //     let sig = Signature(signature_vec);
-        
-    //     // Convert &[u8] to [u8; 32] and create MessageRandomizer
-    //     let randomizer = if msg_randomizer.len() == 32 {
-    //         let mut array = [0u8; 32];
-    //         array.copy_from_slice(msg_randomizer);
-    //         Some(MessageRandomizer(array))
-    //     } else {
-    //         None
-    //     };
-        
-    //     sig.verify(&self.key_pair.pk, randomizer, msg, &self.options)
-    //         .is_ok()
-    // }
 }

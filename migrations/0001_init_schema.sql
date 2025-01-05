@@ -16,3 +16,10 @@ CREATE TABLE Events (
 );
 ALTER TABLE Events ADD CONSTRAINT events_pkey PRIMARY KEY (transaction_hash, log_index);
 
+CREATE TABLE Unblinded (
+    id SERIAL PRIMARY KEY,
+    message_id TEXT NOT NULL UNIQUE,
+    sig TEXT NOT NULL,
+    sig_state TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);

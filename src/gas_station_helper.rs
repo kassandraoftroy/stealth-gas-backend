@@ -5,20 +5,20 @@ use alloy::{
     transports::Transport,
 };
 use serde::Serialize;
-use crate::types::BlindedSignature;
+use eth_stealth_gas_tickets::BlindedSignature;
 
 sol! {
     #[derive(Debug, Serialize)]
     #[sol(rpc)]
     interface IStealthGasStation {
         function sendGasTickets(bytes32[] calldata ids, bytes[] calldata signed) external;
+        function sendGas(uint256[] calldata amounts, address[] calldata targets, bytes calldata metadata) external;
     }
 }
 
 pub use IStealthGasStation::IStealthGasStationInstance;
 
 pub struct StealthGasPayload {
-    pub target: Address,
     pub data: Bytes,
     pub value: U256,
 }
@@ -32,6 +32,11 @@ where
     fn payload_send_gas_tickets(
         &self,
         blind_sigs: Vec<BlindedSignature>
+    ) -> StealthGasPayload;
+    fn payload_send_gas(
+        &self,
+        amounts: Vec<U256>,
+        targets: Vec<Address>
     ) -> StealthGasPayload;
 }
 
@@ -49,15 +54,25 @@ where
         blind_sigs: Vec<BlindedSignature>,
     ) -> StealthGasPayload {
         let (ids, signatures): (Vec<FixedBytes<32>>, Vec<Bytes>) =
-            blind_sigs.into_iter().map(|sig| (sig.id, sig.signature)).unzip();
+            blind_sigs.into_iter().map(|sig| (sig.id, sig.blind_sig)).unzip();
 
         StealthGasPayload {
-            target: self.address().to_owned(),
             data: self
                 .sendGasTickets(ids.into(), signatures.into())
                 .calldata()
                 .to_owned(),
             value: U256::ZERO,
+        }
+    }
+
+    fn payload_send_gas(
+        &self,
+        amounts: Vec<U256>,
+        targets: Vec<Address>
+    ) -> StealthGasPayload {
+        StealthGasPayload {
+            data: self.sendGas(amounts.clone(), targets, Bytes::default()).calldata().to_owned(),
+            value: amounts.into_iter().sum(),
         }
     }
 }

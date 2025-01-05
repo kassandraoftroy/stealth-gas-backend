@@ -6,7 +6,7 @@ use alloy::{
     rpc::types::TransactionRequest
 };
 use crate::gas_station_helper::{StealthGasStationHelper, IStealthGasStationInstance};
-use crate::types::BlindedSignature;
+use eth_stealth_gas_tickets::BlindedSignature;
 use sqlx::PgPool;
 use serde_json::Value;
 use std::sync::Arc;
@@ -18,7 +18,6 @@ pub struct Fulfiller<P: Provider<PubSubFrontend>> {
     pub contract_address: Address,
     pub signer_address: Address,
     pub provider: Arc<P>,
-    pub chain_id: u64,
 }
 
 impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
@@ -27,14 +26,12 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         contract_address: Address,
         signer_address: Address,
         provider: Arc<P>,
-        chain_id: u64,
     ) -> Self {
         Self {
             db_pool,
             contract_address,
             signer_address,
             provider,
-            chain_id,
         }
     }
 
@@ -116,16 +113,11 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
 
         let mut tx_request = TransactionRequest::default()
             .with_from(self.signer_address)
-            .with_to(payload.target)
+            .with_to(self.contract_address)
             .with_input(payload.data)
             .with_value(payload.value)
-            .with_chain_id(self.chain_id)
             .with_max_fee_per_gas(500000000000)
             .with_max_priority_fee_per_gas(1000000000);
-
-        // Fetch and set nonce
-        let nonce = self.provider.get_transaction_count(self.signer_address).await.unwrap();
-        tx_request = tx_request.with_nonce(nonce);
 
         match self.provider.estimate_gas(&tx_request).await {
             Ok(gas_limit) => {
@@ -147,30 +139,39 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
             }
         }
 
-        let pending_tx = self
+        println!("[TX attempt]: {:?}", transaction_hash);
+        let tx_hash = self
             .provider
             .send_transaction(tx_request)
             .await
+            .map_err(|e| e.to_string())?
+            .with_required_confirmations(2)
+            .with_timeout(Some(std::time::Duration::from_secs(120)))
+            .watch()
+            .await
             .map_err(|e| e.to_string())?;
 
-        let tx_hash = *pending_tx.tx_hash();
-        let receipt = pending_tx.get_receipt().await.map_err(|e| e.to_string())?;
+        let receipt = self.provider.get_transaction_receipt(tx_hash).await.map_err(|e| e.to_string())?;
+        match receipt {
+            Some(receipt) => {
+                if !receipt.status() {
+                    sqlx::query(
+                        "UPDATE events SET event_state = 'INDEXED', retry = $3, updated_at = NOW() 
+                    WHERE transaction_hash = $1 AND log_index = $2",
+                    )
+                    .bind(transaction_hash)
+                    .bind(log_index)
+                    .bind(retry)
+                    .execute(&self.db_pool)
+                    .await
+                    .map_err(|e| format!("Failed to update event state: {}", e))?;
 
-        println!("[TX attempt]: {:?}", tx_hash);
-
-        if !receipt.status() {
-            sqlx::query(
-                "UPDATE events SET event_state = 'INDEXED', retry = $3, updated_at = NOW() 
-                 WHERE transaction_hash = $1 AND log_index = $2",
-            )
-            .bind(transaction_hash)
-            .bind(log_index)
-            .bind(retry)
-            .execute(&self.db_pool)
-            .await
-            .map_err(|e| format!("Failed to update event state: {}", e))?;
-
-            return Err("Transaction reverted onchain".to_string());
+                    return Err("Transaction reverted onchain".to_string());
+                }
+            }
+            None => {
+                return Err("Transaction not found".to_string());
+            }
         }
 
         sqlx::query(
@@ -183,7 +184,7 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         .await
         .map_err(|e| format!("Failed to update event state: {}", e))?;
 
-        println!("[TX included]: {:?}", tx_hash);
+        println!("[TX included]: {} (hash: {:?})", transaction_hash, tx_hash);
 
         Ok(())
     }

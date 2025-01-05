@@ -5,13 +5,13 @@ use alloy::{
     rpc::types::{Filter, Log},
     sol,
     sol_types::SolEvent,
-    rpc::types::BlockNumberOrTag::Finalized,
+    rpc::types::{BlockNumberOrTag::Finalized, BlockTransactionsKind::Full},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::sync::Arc;
 use crate::rsasigner::BlindSigner;
-use crate::types::BlindedSignature;
+use eth_stealth_gas_tickets::BlindedSignature;
 use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Digest, Sha256};
 
@@ -103,8 +103,8 @@ impl<T: EventParser> Collector<T> {
 
     async fn process_past_logs(&self) -> anyhow::Result<()> {
         // Fetch current block number
-        let finalized_block = self.provider.get_block_by_number(Finalized, false).await?;
-        let finalized_block_number = finalized_block.unwrap().header.number.unwrap();
+        let finalized_block = self.provider.get_block_by_number(Finalized, Full).await?;
+        let finalized_block_number = finalized_block.unwrap().header.number;
         
         // Adjust filter to fetch logs up to the latest block
         let filter = self.filter.clone().to_block(finalized_block_number);
@@ -122,22 +122,20 @@ impl<T: EventParser> Collector<T> {
 
     async fn process_live_logs(self) -> anyhow::Result<()> {
         let mut last_finalized_block = self.provider
-            .get_block_by_number(Finalized, false)
+            .get_block_by_number(Finalized, Full)
             .await?
             .unwrap()
             .header
-            .number
-            .unwrap();
+            .number;
 
         loop {
             // Fetch the most recent finalized block
             let finalized_block = self.provider
-                .get_block_by_number(Finalized, false)
+                .get_block_by_number(Finalized, Full)
                 .await?
                 .unwrap()
                 .header
-                .number
-                .unwrap();
+                .number;
 
             if finalized_block > last_finalized_block {
                 // Fetch logs for new blocks
@@ -164,7 +162,6 @@ impl<T: EventParser> Collector<T> {
     }
 
     async fn store_event(&self, log: Log, event_data: serde_json::Value, match_id: String) {
-        println!("[UPSERT event] :: {:?}", log.transaction_hash.unwrap_or_default());
         let query = "INSERT INTO events (removed, event_topic, event_kind, event_state, event_data, match_id, block_number, block_timestamp, transaction_hash, transaction_index, log_index) 
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                      ON CONFLICT (transaction_hash, log_index)
@@ -249,7 +246,7 @@ impl EventParser for BuyGasTicketsParser {
                 for i in 0..processed_signed.len() {
                     processed_blind_sigs.push(BlindedSignature {
                         id: FixedBytes::<32>::from_slice(processed_ids[i].as_ref()),
-                        signature: processed_signed[i].clone(),
+                        blind_sig: processed_signed[i].clone(),
                     });
                 }
 
@@ -300,6 +297,7 @@ impl EventParser for SendGasTicketsParser {
     fn parse_event(&self, log: Log) -> (serde_json::Value, String) {
         match log.log_decode::<IStealthGasStation::SendGasTickets>() {
             Ok(decoded_log) => {
+                println!("[PARSE SendGasTickets] :: {:?}", log.transaction_hash.unwrap_or_default());
                 let match_id = compute_ids_hash(&decoded_log.inner.ids.clone());
                 let log_data = SendGasTicketsEventLog {
                     ids: decoded_log.inner.ids.clone(),
@@ -345,6 +343,7 @@ impl EventParser for NativeTransfersParser {
     fn parse_event(&self, log: Log) -> (serde_json::Value, String) {
         match log.log_decode::<IStealthGasStation::NativeTransfers>() {
             Ok(decoded_log) => {
+                println!("[PARSE NativeTransfers] :: {:?}", log.transaction_hash.unwrap_or_default());
                 let log_data = NativeTransfersEventLog {
                     amounts: decoded_log.inner.amounts.clone(),
                     targets: decoded_log.inner.targets.clone(),
