@@ -8,19 +8,19 @@ use alloy::{
     rpc::types::{BlockNumberOrTag::Finalized, BlockTransactionsKind::Full},
 };
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
 use std::sync::Arc;
 use crate::rsasigner::BlindSigner;
 use eth_stealth_gas_tickets::BlindedSignature;
 use std::sync::atomic::{AtomicBool, Ordering};
 use sha2::{Digest, Sha256};
+use crate::sql::DbClient;
 
 #[derive(Clone)]
 pub struct Collector<T: EventParser> {
     provider: Arc<RootProvider<PubSubFrontend>>,
     parser: T,
     filter: Filter,
-    db_pool: PgPool,
+    db_client: DbClient,
     live: Arc<AtomicBool>,
 }
 
@@ -54,7 +54,7 @@ impl<T: EventParser> Collector<T> {
         parser: T,
         targets: Vec<Address>,
         start_block: u64,
-        db_pool: PgPool,
+        db_client: DbClient,
     ) -> Self {
         let filter = Filter::new()
             .address(targets)
@@ -64,17 +64,10 @@ impl<T: EventParser> Collector<T> {
             provider: Arc::new(provider),
             parser,
             filter,
-            db_pool,
+            db_client,
             live: Arc::new(AtomicBool::new(false))
         }
     }
-
-    // pub fn filter(&self) -> &Filter {
-    //     &self.filter
-    // }
-    // pub fn provider(&self) -> &Arc<RootProvider<PubSubFrontend>> {
-    //     &self.provider
-    // }
     
     pub fn event_topic(&self) -> B256 {
         self.parser.event_topic()
@@ -155,36 +148,25 @@ impl<T: EventParser> Collector<T> {
                 // Update the last finalized block
                 last_finalized_block = finalized_block;
 
-                // Sleep for 15 seconds before polling again
-                tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+                // Sleep for 20 seconds before polling again
+                tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
             }
         }
     }
 
     async fn store_event(&self, log: Log, event_data: serde_json::Value, match_id: String) {
-        let query = "INSERT INTO events (removed, event_topic, event_kind, event_state, event_data, match_id, block_number, block_timestamp, transaction_hash, transaction_index, log_index) 
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                     ON CONFLICT (transaction_hash, log_index)
-                     DO UPDATE SET
-                     removed = EXCLUDED.removed,
-                     block_number = EXCLUDED.block_number,
-                     block_timestamp = EXCLUDED.block_timestamp,
-                     transaction_index = EXCLUDED.transaction_index;";
-        if let Err(err) = sqlx::query(query)
-            .bind(log.removed)
-            .bind(self.event_topic().to_string())
-            .bind(self.event_kind())
-            .bind("INDEXED".to_owned())
-            .bind(event_data)
-            .bind(match_id)
-            .bind(log.block_number.unwrap_or_default() as i64)
-            .bind(log.block_timestamp.unwrap_or_default() as i64)
-            .bind(log.transaction_hash.unwrap_or_default().to_string())
-            .bind(log.transaction_index.unwrap_or_default() as i32)
-            .bind(log.log_index.unwrap_or_default() as i32)
-            .execute(&self.db_pool)
-            .await
-        {
+        if let Err(err) = self.db_client.insert_event(
+            log.removed,
+            &self.event_topic().to_string(),
+            &self.event_kind(),
+            event_data,
+            match_id,
+            log.block_number.unwrap_or_default() as i64,
+            log.block_timestamp.unwrap_or_default() as i64,
+            &log.transaction_hash.unwrap_or_default().to_string(),
+            log.transaction_index.unwrap_or_default() as i32,
+            log.log_index.unwrap_or_default() as i32,
+        ).await {
             eprintln!("Failed to insert event into database: {}", err);
         }
     }

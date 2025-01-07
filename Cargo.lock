@@ -1558,9 +1558,9 @@ dependencies = [
 
 [[package]]
 name = "eth-stealth-gas-tickets"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e9352ddb586cac3fee2ab0f2655977cea21d00f8354cfa654f6de5e4e5704fc"
+checksum = "0259d2680caa45bcca1506e9462fe86e26f300cdf81f89a9fbb59fefdb424018"
 dependencies = [
  "alloy",
  "blind-rsa-signatures",

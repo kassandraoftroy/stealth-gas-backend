@@ -4,6 +4,7 @@ mod keyencoder;
 mod fulfiller;
 mod gas_station_helper;
 mod http_server;
+mod sql;
 
 use fulfiller::Fulfiller;
 use blind_rsa_signatures::{KeyPair, SecretKey};
@@ -17,13 +18,14 @@ use alloy::signers::local::PrivateKeySigner;
 use sqlx::PgPool;
 use std::env;
 use tokio;
-use eth_stealth_gas_tickets::CoordinatorPubKey;
+use eth_stealth_gas_tickets::TicketsVerifier;
 use crate::rsasigner::BlindSigner;
 use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use crate::keyencoder::encode_public_key_to_hex;
 use hex;
 use http_server::start_http_server;
+use crate::sql::DbClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -83,8 +85,8 @@ async fn main() -> anyhow::Result<()> {
         .expect("Expected bytes output");
     let contract_pubkey_hex = "0x".to_string() + &hex::encode(contract_pubkey);
 
-    let cpk = CoordinatorPubKey::from_hex_string(&contract_pubkey_hex).expect("Failed to parse coordinator pubkey");
-    if cpk.to_hex_string() != encode_public_key_to_hex(&pk) || cpk.pub_key != pk {
+    let tv = TicketsVerifier::from_hex_string(&contract_pubkey_hex).expect("Failed to parse coordinator pubkey");
+    if tv.to_hex_string() != encode_public_key_to_hex(&pk) || tv.public_key != pk {
         panic!("env rsa key does not match onchain rsa pubkey");
     }
 
@@ -95,7 +97,6 @@ async fn main() -> anyhow::Result<()> {
         .await
         .expect("Failed to call ticketCost");
     let (ticket_cost, _) = ticket_cost_val[0].as_uint().expect("Failed to get ticket cost");
-    println!("[STARTUP]: ticket cost: {}", ticket_cost);
 
     let rsa_key_pair = KeyPair { pk, sk };
     let rsa_signer = Arc::new(BlindSigner::new(rsa_key_pair));
@@ -109,12 +110,14 @@ async fn main() -> anyhow::Result<()> {
         .on_ws(WsConnect::new(rpc_url))
         .await?;
 
+    let db_client = DbClient::new(db_pool);
+
     let buy_gas_tickets_collector = Collector::new(
         provider.clone(),
         BuyGasTicketsParser::new(rsa_signer.clone()),
         vec![contract_address],
         start_block,
-        db_pool.clone(),
+        db_client.clone(),
     );
 
     let send_gas_tickets_collector = Collector::new(
@@ -122,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
         SendGasTicketsParser,
         vec![contract_address],
         start_block,
-        db_pool.clone(),
+        db_client.clone(),
     );
 
     let native_transfers_collector = Collector::new(
@@ -130,17 +133,17 @@ async fn main() -> anyhow::Result<()> {
         NativeTransfersParser,
         vec![contract_address],
         start_block,
-        db_pool.clone(),
+        db_client.clone(),
     );
 
     let fulfiller = Fulfiller::new(
-        db_pool.clone(),
+        db_client.clone(),
         contract_address,
         eth_signer_address,
         Arc::new(signer_provider.clone()),
     );
 
-    println!("[STARTUP]: starting coordinator with key: {:?}", contract_pubkey_hex);
+    println!("[STARTUP]: starting coordinator with key: {}", contract_pubkey_hex);
 
     let buy_gas_tickets_collector_clone = buy_gas_tickets_collector.clone();
     let send_gas_tickets_collector_clone = send_gas_tickets_collector.clone();
@@ -162,8 +165,8 @@ async fn main() -> anyhow::Result<()> {
     });
 
     println!("[STARTUP]: starting HTTP server");
-    let verifier = Arc::new(cpk);
-    start_http_server(ticket_cost, contract_address, Arc::new(signer_provider), verifier, db_pool).await;
+    let verifier = Arc::new(tv);
+    start_http_server(ticket_cost, contract_address, eth_signer_address, Arc::new(signer_provider), verifier, db_client).await;
 
     Ok(())
 }
