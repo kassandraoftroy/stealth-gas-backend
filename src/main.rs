@@ -1,6 +1,5 @@
 mod collectors;
 mod rsasigner;
-mod keyencoder;
 mod fulfiller;
 mod gas_station_helper;
 mod http_server;
@@ -22,7 +21,6 @@ use eth_stealth_gas_tickets::TicketsVerifier;
 use crate::rsasigner::BlindSigner;
 use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
-use crate::keyencoder::encode_public_key_to_hex;
 use hex;
 use http_server::start_http_server;
 use crate::sql::DbClient;
@@ -86,7 +84,7 @@ async fn main() -> anyhow::Result<()> {
     let contract_pubkey_hex = "0x".to_string() + &hex::encode(contract_pubkey);
 
     let tv = TicketsVerifier::from_hex_string(&contract_pubkey_hex).expect("Failed to parse coordinator pubkey");
-    if tv.to_hex_string() != encode_public_key_to_hex(&pk) || tv.public_key != pk {
+    if tv.public_key != pk {
         panic!("env rsa key does not match onchain rsa pubkey");
     }
 

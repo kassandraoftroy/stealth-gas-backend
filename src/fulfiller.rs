@@ -11,7 +11,7 @@ use eth_stealth_gas_tickets::BlindedSignature;
 use std::sync::Arc;
 use sqlx::types::chrono::Utc;
 use crate::sql::{DbClient, EventState};
-
+use crate::http_server::Spend;
 
 pub fn get_hash_from_builder<T: Transport + Clone, N: Network>(builder: &PendingTransactionBuilder<T, N>) -> FixedBytes<32> {
     *builder.tx_hash()
@@ -128,7 +128,11 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         if let Some(spend) = self.db_client.get_next_spend().await? {
             let contract = IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
             let (amounts, receivers): (Vec<U256>, Vec<Address>) =
-                spend.spend_data.clone().into_iter().map(|spend| (spend.amount, spend.receiver)).unzip();
+                serde_json::from_value::<Vec<Spend>>(spend.spend_data.clone())
+                    .unwrap()
+                    .into_iter()
+                    .map(|spend| (spend.amount, spend.receiver))
+                    .unzip();
 
             self.db_client.update_spend_state(spend.id, EventState::Pending).await?;
             let payload = contract.payload_send_gas(amounts, receivers);

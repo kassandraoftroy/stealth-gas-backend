@@ -1,7 +1,6 @@
 use sqlx::{PgPool, Row};
 use sqlx::types::chrono::{DateTime, Utc};
 use serde_json::Value;
-use crate::http_server::Spend;
 
 // Event states as an enum to prevent string errors
 #[derive(Debug, PartialEq)]
@@ -56,7 +55,7 @@ pub struct BuyEventData {
 pub struct SpendInfo {
     pub id: i32,
     pub tx_hash: String,
-    pub spend_data: Vec<Spend>,
+    pub spend_data: Value,
     pub spend_state: EventState,
     pub updated_at: DateTime<Utc>,
 }
@@ -218,7 +217,7 @@ impl DbClient {
 
     pub async fn get_unfulfilled_spends(&self) -> Result<Vec<SpendInfo>, String> {
         sqlx::query(
-            "SELECT id, tx_hash, spend_state, updated_at FROM spends WHERE spend_state IN ('PENDING', 'INCLUDED', 'INDEXED')"
+            "SELECT id, tx_hash, spend_state, spend_data, updated_at FROM spends WHERE spend_state IN ('PENDING', 'INCLUDED', 'INDEXED')"
         )
         .fetch_all(&self.pool)
         .await
@@ -227,7 +226,7 @@ impl DbClient {
             rows.into_iter().map(|row| SpendInfo {
                 id: row.get("id"),
                 tx_hash: row.get("tx_hash"),
-                spend_data: serde_json::from_value(row.get("spend_data")).unwrap(),
+                spend_data: row.get("spend_data"),
                 spend_state: EventState::from_str(row.get("spend_state")),
                 updated_at: row.get("updated_at"),
             }).collect()
@@ -296,11 +295,11 @@ impl DbClient {
         .map_err(|e| format!("Failed to fetch msg ids: {}", e))
     }
 
-    pub async fn insert_new_spend(&self, spends: Vec<Spend>, tx_hash: &str, tx_nonce: i32) -> Result<i32, String> {
+    pub async fn insert_new_spend(&self, spends: Value, tx_hash: &str, tx_nonce: i32) -> Result<i32, String> {
         sqlx::query!(
             "INSERT INTO spends (spend_state, spend_data, tx_hash, tx_nonce) VALUES ($1, $2, $3, $4) RETURNING id",
             EventState::Pending.as_str(),
-            serde_json::to_value(spends).unwrap(),
+            spends,
             tx_hash,
             tx_nonce
         )
@@ -342,7 +341,7 @@ impl DbClient {
 
     pub async fn check_matching_native_transfer(&self, tx_hash: &str) -> Result<bool, String> {
         sqlx::query(
-            "SELECT transaction_hash FROM events WHERE event_kind = 'NativeTransfer' AND transaction_hash = $1 AND removed = false"
+            "SELECT transaction_hash FROM events WHERE event_kind = 'NativeTransfers' AND transaction_hash = $1 AND removed = false"
         )
         .bind(tx_hash)
         .fetch_optional(&self.pool)

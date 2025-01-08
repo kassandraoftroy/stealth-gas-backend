@@ -137,8 +137,6 @@ async fn redeem(
         if state.verifier.verify_signed_ticket(sig, &options).is_err() {
             return Err("Invalid signature".to_string());
         }
-
-        state.db_client.insert_new_ticket(&msg_id, &format!("0x{}", hex::encode(sig.finalized_sig.to_vec()))).await?;
     }
 
     let contract = IStealthGasStationInstance::init(state.contract_address, state.provider.clone());
@@ -146,24 +144,26 @@ async fn redeem(
     let (amounts, receivers): (Vec<U256>, Vec<Address>) =
         spends.clone().into_iter().map(|spend| (spend.amount, spend.receiver)).unzip();
 
+    println!("amounts: {:?}", amounts);
+    println!("receivers: {:?}", receivers);
     let payload = contract.payload_send_gas(amounts, receivers);
+    println!("payload: {:?}", payload);
     let nonce = state.provider.get_transaction_count(state.signer_address).await.map_err(|e| e.to_string())?;
-    let mut tx_request = TransactionRequest::default()
+    let tx_request = TransactionRequest::default()
         .with_to(state.contract_address)
         .with_nonce(nonce)
         .with_input(payload.data)
-        .with_value(payload.value)
         .with_max_fee_per_gas(500000000000)
         .with_max_priority_fee_per_gas(1000000000);
 
-    match state.provider.estimate_gas(&tx_request).await {
-        Ok(gas_limit) => {
-            tx_request = tx_request.with_gas_limit(gas_limit + 25000);
-        }
-        Err(e) => {
-            return Err(e.to_string());
-        }
-    }
+    // match state.provider.estimate_gas(&tx_request).await {
+    //     Ok(gas_limit) => {
+    //         tx_request = tx_request.with_gas_limit(gas_limit + 25000);
+    //     }
+    //     Err(e) => {
+    //         return Err(e.to_string());
+    //     }
+    // }
 
     for sig in &spend_request.signatures {
         let msg_id = format!(
@@ -181,7 +181,7 @@ async fn redeem(
         .map_err(|e| e.to_string())?;
 
     let tx_hash = *pending.tx_hash();
-    let result = state.db_client.insert_new_spend(spends.clone(), &format!("0x{}", hex::encode(tx_hash.to_vec())), nonce as i32).await?;
+    let result = state.db_client.insert_new_spend(serde_json::to_value(spends.clone()).unwrap(), &format!("0x{}", hex::encode(tx_hash.to_vec())), nonce as i32).await?;
     for sig in &spend_request.signatures {
         let msg_id = format!(
             "0x{}0x{}",
