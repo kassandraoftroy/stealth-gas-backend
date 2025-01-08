@@ -1,19 +1,21 @@
+use crate::gas_station_helper::{IStealthGasStationInstance, StealthGasStationHelper};
+use crate::http_server::Spend;
+use crate::sql::{DbClient, EventState};
 use alloy::{
-    network::{TransactionBuilder, Network},
+    network::{Network, TransactionBuilder},
     primitives::{Address, FixedBytes, U256},
-    providers::{Provider, PendingTransactionBuilder},
+    providers::{PendingTransactionBuilder, Provider},
     pubsub::PubSubFrontend,
     rpc::types::TransactionRequest,
     transports::Transport,
 };
-use crate::gas_station_helper::{StealthGasStationHelper, IStealthGasStationInstance};
 use eth_stealth_gas_tickets::BlindedSignature;
-use std::sync::Arc;
 use sqlx::types::chrono::Utc;
-use crate::sql::{DbClient, EventState};
-use crate::http_server::Spend;
+use std::sync::Arc;
 
-pub fn get_hash_from_builder<T: Transport + Clone, N: Network>(builder: &PendingTransactionBuilder<T, N>) -> FixedBytes<32> {
+pub fn get_hash_from_builder<T: Transport + Clone, N: Network>(
+    builder: &PendingTransactionBuilder<T, N>,
+) -> FixedBytes<32> {
     *builder.tx_hash()
 }
 
@@ -64,18 +66,24 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
             let log_index = event.log_index;
             let event_data = event.event_data;
 
-            let blind_sigs: Vec<BlindedSignature> = serde_json::from_value(event_data["processed_data"]["blind_sigs"].clone())
-                .map_err(|e| format!("Failed to parse blind signatures: {}", e))?;
-            
+            let blind_sigs: Vec<BlindedSignature> =
+                serde_json::from_value(event_data["processed_data"]["blind_sigs"].clone())
+                    .map_err(|e| format!("Failed to parse blind signatures: {}", e))?;
+
             if blind_sigs.is_empty() {
-                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Discarded).await?;
+                self.db_client
+                    .update_event_state(&transaction_hash, log_index, EventState::Discarded)
+                    .await?;
                 return Ok(());
             }
 
-            self.db_client.update_event_state(&transaction_hash, log_index, EventState::Pending).await?;
+            self.db_client
+                .update_event_state(&transaction_hash, log_index, EventState::Pending)
+                .await?;
 
             self.dispatch_send_gas_tickets(&transaction_hash, log_index, blind_sigs)
-                .await.map_err(|e| format!("Error dispatching sendGasTickets: {}", e))?;
+                .await
+                .map_err(|e| format!("Error dispatching sendGasTickets: {}", e))?;
         }
         Ok(())
     }
@@ -86,10 +94,15 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         log_index: i32,
         blind_sigs: Vec<BlindedSignature>,
     ) -> Result<(), String> {
-        let contract = IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
+        let contract =
+            IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
         let payload = contract.payload_send_gas_tickets(blind_sigs);
 
-        let nonce = self.provider.get_transaction_count(self.signer_address).await.map_err(|e| e.to_string())?;
+        let nonce = self
+            .provider
+            .get_transaction_count(self.signer_address)
+            .await
+            .map_err(|e| e.to_string())?;
         let mut tx_request = TransactionRequest::default()
             .with_from(self.signer_address)
             .with_to(self.contract_address)
@@ -104,7 +117,9 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                 tx_request = tx_request.with_gas_limit(gas_limit + 25000);
             }
             Err(e) => {
-                self.db_client.update_event_state(transaction_hash, log_index, EventState::Indexed).await?;
+                self.db_client
+                    .update_event_state(transaction_hash, log_index, EventState::Indexed)
+                    .await?;
 
                 return Err(format!("Failed to estimate gas: {}", e));
             }
@@ -119,14 +134,17 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
 
         let tx_hash = format!("0x{}", hex::encode(get_hash_from_builder(&builder)));
 
-        self.db_client.update_event_tx_data(transaction_hash, log_index, &tx_hash, nonce as i64).await?;
+        self.db_client
+            .update_event_tx_data(transaction_hash, log_index, &tx_hash, nonce as i64)
+            .await?;
 
         Ok(())
     }
 
     async fn process_next_spend(&self) -> Result<(), String> {
         if let Some(spend) = self.db_client.get_next_spend().await? {
-            let contract = IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
+            let contract =
+                IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
             let (amounts, receivers): (Vec<U256>, Vec<Address>) =
                 serde_json::from_value::<Vec<Spend>>(spend.spend_data.clone())
                     .unwrap()
@@ -134,10 +152,16 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                     .map(|spend| (spend.amount, spend.receiver))
                     .unzip();
 
-            self.db_client.update_spend_state(spend.id, EventState::Pending).await?;
+            self.db_client
+                .update_spend_state(spend.id, EventState::Pending)
+                .await?;
             let payload = contract.payload_send_gas(amounts, receivers);
 
-            let nonce = self.provider.get_transaction_count(self.signer_address).await.map_err(|e| e.to_string())?;
+            let nonce = self
+                .provider
+                .get_transaction_count(self.signer_address)
+                .await
+                .map_err(|e| e.to_string())?;
             let mut tx_request = TransactionRequest::default()
                 .with_from(self.signer_address)
                 .with_to(self.contract_address)
@@ -164,7 +188,9 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                 .map_err(|e| e.to_string())?;
 
             let tx_hash = format!("0x{}", hex::encode(get_hash_from_builder(&builder)));
-            self.db_client.update_spend_tx_data(spend.id, &tx_hash, nonce as i64).await?;
+            self.db_client
+                .update_spend_tx_data(spend.id, &tx_hash, nonce as i64)
+                .await?;
         }
         Ok(())
     }
@@ -183,11 +209,21 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
             let now = Utc::now();
             let elapsed_time = now.signed_duration_since(updated_at);
 
-            if !fulfill_tx_hash.is_empty() && (event_state == EventState::Pending || 
-                (event_state == EventState::Included && elapsed_time.num_minutes() > 29)) {
-                let fulfill_tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(hex::decode(fulfill_tx_hash.replace("0x", "")).unwrap_or_default().as_slice());
+            if !fulfill_tx_hash.is_empty()
+                && (event_state == EventState::Pending
+                    || (event_state == EventState::Included && elapsed_time.num_minutes() > 29))
+            {
+                let fulfill_tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(
+                    hex::decode(fulfill_tx_hash.replace("0x", ""))
+                        .unwrap_or_default()
+                        .as_slice(),
+                );
                 let mut state = EventState::Pending;
-                match self.provider.get_transaction_receipt(fulfill_tx_hash_bytes).await {
+                match self
+                    .provider
+                    .get_transaction_receipt(fulfill_tx_hash_bytes)
+                    .await
+                {
                     Ok(receipt) => {
                         if receipt.is_some() {
                             if receipt.unwrap().status() {
@@ -196,26 +232,40 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                                 state = EventState::Indexed;
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         println!("[INFO]Error finding tx receipt: {:?}", e);
                     }
                 }
                 if state != event_state {
-                    println!("[PENDING TX] event: {}, updating state: {} -> {}", 
-                        transaction_hash, event_state.as_str(), state.as_str());
-                    self.db_client.update_event_state(&transaction_hash, log_index, state).await?;
+                    println!(
+                        "[PENDING TX] event: {}, updating state: {} -> {}",
+                        transaction_hash,
+                        event_state.as_str(),
+                        state.as_str()
+                    );
+                    self.db_client
+                        .update_event_state(&transaction_hash, log_index, state)
+                        .await?;
 
                     continue;
                 }
             }
 
-            if self.db_client.check_matching_send_gas_tickets(&match_id).await? {
+            if self
+                .db_client
+                .check_matching_send_gas_tickets(&match_id)
+                .await?
+            {
                 println!("[FULFILLED BUY]: {}", transaction_hash);
-                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Fulfilled).await?;
+                self.db_client
+                    .update_event_state(&transaction_hash, log_index, EventState::Fulfilled)
+                    .await?;
             } else if elapsed_time.num_minutes() > 29 && event_state == EventState::Pending {
                 println!("[RETURN BUY TO INDEXED]: {}", transaction_hash);
-                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Indexed).await?;
+                self.db_client
+                    .update_event_state(&transaction_hash, log_index, EventState::Indexed)
+                    .await?;
             }
         }
 
@@ -232,16 +282,30 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         let now = Utc::now();
 
         for spend in pending_spends {
-            if self.db_client.check_matching_native_transfer(&spend.tx_hash).await? {
-                println!("[FULFILLED SPEND] spend: {}, tx: {}", spend.id, spend.tx_hash);
-                self.db_client.update_spend_state(spend.id, EventState::Fulfilled).await?;
+            if self
+                .db_client
+                .check_matching_native_transfer(&spend.tx_hash)
+                .await?
+            {
+                println!(
+                    "[FULFILLED SPEND] spend: {}, tx: {}",
+                    spend.id, spend.tx_hash
+                );
+                self.db_client
+                    .update_spend_state(spend.id, EventState::Fulfilled)
+                    .await?;
 
                 continue;
             }
             let elapsed_time = now.signed_duration_since(spend.updated_at);
-            if spend.spend_state == EventState::Pending || 
-                (spend.spend_state == EventState::Included && elapsed_time.num_minutes() > 29) {
-                let tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(hex::decode(spend.tx_hash.replace("0x", "")).unwrap_or_default().as_slice());
+            if spend.spend_state == EventState::Pending
+                || (spend.spend_state == EventState::Included && elapsed_time.num_minutes() > 29)
+            {
+                let tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(
+                    hex::decode(spend.tx_hash.replace("0x", ""))
+                        .unwrap_or_default()
+                        .as_slice(),
+                );
                 let mut state = EventState::Pending;
                 match self.provider.get_transaction_receipt(tx_hash_bytes).await {
                     Ok(receipt) => {
@@ -252,14 +316,18 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                                 state = EventState::Indexed;
                             }
                         }
-                    },
+                    }
                     Err(e) => {
                         println!("[INFO] Error finding tx receipt: {:?}", e);
                     }
                 }
                 if state != spend.spend_state {
-                    println!("[PENDING SPEND TX] spend: {}, updating state: {} -> {}", 
-                        spend.id, spend.spend_state.as_str(), state.as_str());
+                    println!(
+                        "[PENDING SPEND TX] spend: {}, updating state: {} -> {}",
+                        spend.id,
+                        spend.spend_state.as_str(),
+                        state.as_str()
+                    );
                     self.db_client.update_spend_state(spend.id, state).await?;
 
                     continue;
@@ -267,11 +335,12 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
             }
             if elapsed_time.num_minutes() > 29 && spend.spend_state == EventState::Pending {
                 println!("[RETURN SPEND TO INDEXED]: {}", spend.id);
-                self.db_client.update_spend_state(spend.id, EventState::Indexed).await?;
+                self.db_client
+                    .update_spend_state(spend.id, EventState::Indexed)
+                    .await?;
 
                 continue;
             }
-
         }
 
         Ok(())

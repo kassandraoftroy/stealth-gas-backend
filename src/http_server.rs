@@ -1,27 +1,32 @@
+use crate::gas_station_helper::{IStealthGasStationInstance, StealthGasStationHelper};
+use crate::sql::DbClient;
+use alloy::{
+    network::{Ethereum, EthereumWallet, TransactionBuilder},
+    primitives::{Address, FixedBytes, U256},
+    providers::{
+        fillers::{
+            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+            WalletFiller,
+        },
+        Identity, Provider, RootProvider,
+    },
+    pubsub::PubSubFrontend,
+    rpc::types::TransactionRequest,
+};
+use eth_stealth_gas_tickets::{SignedTicket, TicketsVerifier};
 use rocket::{get, post, routes, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
-use alloy::{
-    network::{TransactionBuilder, Ethereum, EthereumWallet},
-    primitives::{Address, FixedBytes, U256},
-    providers::{fillers::{FillProvider, JoinFill, GasFiller, ChainIdFiller, NonceFiller, WalletFiller, BlobGasFiller}, RootProvider, Identity, Provider},
-    pubsub::PubSubFrontend,
-    rpc::types::TransactionRequest
-};
-use eth_stealth_gas_tickets::{TicketsVerifier, SignedTicket};
 use std::sync::Arc;
-use crate::gas_station_helper::{StealthGasStationHelper, IStealthGasStationInstance};
-use crate::sql::DbClient;
 
 type CombinedFiller = JoinFill<
-    JoinFill<Identity, JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>>,
-    WalletFiller<EthereumWallet>
+    JoinFill<
+        Identity,
+        JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+    >,
+    WalletFiller<EthereumWallet>,
 >;
-type AppProvider = Arc<FillProvider<
-    CombinedFiller,
-    RootProvider<PubSubFrontend>,
-    PubSubFrontend,
-    Ethereum
->>;
+type AppProvider =
+    Arc<FillProvider<CombinedFiller, RootProvider<PubSubFrontend>, PubSubFrontend, Ethereum>>;
 
 // Struct to represent a spend request
 #[derive(Serialize, Deserialize)]
@@ -117,7 +122,7 @@ async fn redeem(
     if total_amount > max_amount {
         return Err("Invalid total spend amount".to_string());
     } else if total_amount < max_amount {
-        spends.push(Spend{
+        spends.push(Spend {
             amount: max_amount - total_amount,
             receiver: state.signer_address,
         });
@@ -141,14 +146,21 @@ async fn redeem(
 
     let contract = IStealthGasStationInstance::init(state.contract_address, state.provider.clone());
 
-    let (amounts, receivers): (Vec<U256>, Vec<Address>) =
-        spends.clone().into_iter().map(|spend| (spend.amount, spend.receiver)).unzip();
+    let (amounts, receivers): (Vec<U256>, Vec<Address>) = spends
+        .clone()
+        .into_iter()
+        .map(|spend| (spend.amount, spend.receiver))
+        .unzip();
 
     println!("amounts: {:?}", amounts);
     println!("receivers: {:?}", receivers);
     let payload = contract.payload_send_gas(amounts, receivers);
     println!("payload: {:?}", payload);
-    let nonce = state.provider.get_transaction_count(state.signer_address).await.map_err(|e| e.to_string())?;
+    let nonce = state
+        .provider
+        .get_transaction_count(state.signer_address)
+        .await
+        .map_err(|e| e.to_string())?;
     let tx_request = TransactionRequest::default()
         .with_to(state.contract_address)
         .with_nonce(nonce)
@@ -172,23 +184,40 @@ async fn redeem(
             hex::encode(sig.msg_randomizer.as_slice())
         );
 
-        state.db_client.insert_new_ticket(&msg_id, &format!("0x{}", hex::encode(sig.finalized_sig.to_vec()))).await?;
+        state
+            .db_client
+            .insert_new_ticket(
+                &msg_id,
+                &format!("0x{}", hex::encode(sig.finalized_sig.to_vec())),
+            )
+            .await?;
     }
 
-    let pending = state.provider
+    let pending = state
+        .provider
         .send_transaction(tx_request)
         .await
         .map_err(|e| e.to_string())?;
 
     let tx_hash = *pending.tx_hash();
-    let result = state.db_client.insert_new_spend(serde_json::to_value(spends.clone()).unwrap(), &format!("0x{}", hex::encode(tx_hash.to_vec())), nonce as i32).await?;
+    let result = state
+        .db_client
+        .insert_new_spend(
+            serde_json::to_value(spends.clone()).unwrap(),
+            &format!("0x{}", hex::encode(tx_hash.to_vec())),
+            nonce as i32,
+        )
+        .await?;
     for sig in &spend_request.signatures {
         let msg_id = format!(
             "0x{}0x{}",
             hex::encode(sig.msg.to_vec()),
             hex::encode(sig.msg_randomizer.as_slice())
         );
-        state.db_client.update_ticket_spend_id(result, &msg_id).await?;
+        state
+            .db_client
+            .update_ticket_spend_id(result, &msg_id)
+            .await?;
     }
 
     Ok(Json(SpendReceipt {
@@ -217,7 +246,10 @@ pub async fn start_http_server(
 
     rocket::build()
         .manage(state)
-        .mount("/", routes![hello, contract_address, chain_id, validate_tickets, redeem])
+        .mount(
+            "/",
+            routes![hello, contract_address, chain_id, validate_tickets, redeem],
+        )
         .launch()
         .await
         .expect("Failed to launch Rocket server");

@@ -1,19 +1,19 @@
+use crate::rsasigner::BlindSigner;
+use crate::sql::DbClient;
 use alloy::{
-    primitives::{Address, B256, Bytes, FixedBytes, U256},
+    primitives::{Address, Bytes, FixedBytes, B256, U256},
     providers::{Provider, RootProvider},
     pubsub::PubSubFrontend,
+    rpc::types::{BlockNumberOrTag::Finalized, BlockTransactionsKind::Full},
     rpc::types::{Filter, Log},
     sol,
     sol_types::SolEvent,
-    rpc::types::{BlockNumberOrTag::Finalized, BlockTransactionsKind::Full},
 };
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use crate::rsasigner::BlindSigner;
 use eth_stealth_gas_tickets::BlindedSignature;
-use std::sync::atomic::{AtomicBool, Ordering};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use crate::sql::DbClient;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct Collector<T: EventParser> {
@@ -56,19 +56,17 @@ impl<T: EventParser> Collector<T> {
         start_block: u64,
         db_client: DbClient,
     ) -> Self {
-        let filter = Filter::new()
-            .address(targets)
-            .from_block(start_block);
-        
+        let filter = Filter::new().address(targets).from_block(start_block);
+
         Self {
             provider: Arc::new(provider),
             parser,
             filter,
             db_client,
-            live: Arc::new(AtomicBool::new(false))
+            live: Arc::new(AtomicBool::new(false)),
         }
     }
-    
+
     pub fn event_topic(&self) -> B256 {
         self.parser.event_topic()
     }
@@ -98,7 +96,7 @@ impl<T: EventParser> Collector<T> {
         // Fetch current block number
         let finalized_block = self.provider.get_block_by_number(Finalized, Full).await?;
         let finalized_block_number = finalized_block.unwrap().header.number;
-        
+
         // Adjust filter to fetch logs up to the latest block
         let filter = self.filter.clone().to_block(finalized_block_number);
 
@@ -114,7 +112,8 @@ impl<T: EventParser> Collector<T> {
     }
 
     async fn process_live_logs(self) -> anyhow::Result<()> {
-        let mut last_finalized_block = self.provider
+        let mut last_finalized_block = self
+            .provider
             .get_block_by_number(Finalized, Full)
             .await?
             .unwrap()
@@ -123,7 +122,8 @@ impl<T: EventParser> Collector<T> {
 
         loop {
             // Fetch the most recent finalized block
-            let finalized_block = self.provider
+            let finalized_block = self
+                .provider
                 .get_block_by_number(Finalized, Full)
                 .await?
                 .unwrap()
@@ -132,7 +132,9 @@ impl<T: EventParser> Collector<T> {
 
             if finalized_block > last_finalized_block {
                 // Fetch logs for new blocks
-                let filter = self.filter.clone()
+                let filter = self
+                    .filter
+                    .clone()
                     .from_block(last_finalized_block - 64)
                     .to_block(finalized_block); // Up to the most recent finalized block
 
@@ -155,18 +157,22 @@ impl<T: EventParser> Collector<T> {
     }
 
     async fn store_event(&self, log: Log, event_data: serde_json::Value, match_id: String) {
-        if let Err(err) = self.db_client.insert_event(
-            log.removed,
-            &self.event_topic().to_string(),
-            &self.event_kind(),
-            event_data,
-            match_id,
-            log.block_number.unwrap_or_default() as i64,
-            log.block_timestamp.unwrap_or_default() as i64,
-            &log.transaction_hash.unwrap_or_default().to_string(),
-            log.transaction_index.unwrap_or_default() as i32,
-            log.log_index.unwrap_or_default() as i32,
-        ).await {
+        if let Err(err) = self
+            .db_client
+            .insert_event(
+                log.removed,
+                &self.event_topic().to_string(),
+                &self.event_kind(),
+                event_data,
+                match_id,
+                log.block_number.unwrap_or_default() as i64,
+                log.block_timestamp.unwrap_or_default() as i64,
+                &log.transaction_hash.unwrap_or_default().to_string(),
+                log.transaction_index.unwrap_or_default() as i32,
+                log.log_index.unwrap_or_default() as i32,
+            )
+            .await
+        {
             eprintln!("Failed to insert event into database: {}", err);
         }
     }
@@ -215,15 +221,22 @@ impl EventParser for BuyGasTicketsParser {
     fn parse_event(&self, log: Log) -> (serde_json::Value, String) {
         match log.log_decode::<IStealthGasStation::BuyGasTickets>() {
             Ok(decoded_log) => {
-                println!("[PARSE BuyGasTickets] :: {:?}", log.transaction_hash.unwrap_or_default());
+                println!(
+                    "[PARSE BuyGasTickets] :: {:?}",
+                    log.transaction_hash.unwrap_or_default()
+                );
                 let blinded_messages = decoded_log.inner.blinded.clone();
-                
+
                 let log_data = BuyGasTicketsLog {
                     blinded: blinded_messages.clone(),
                 };
 
-                let (processed_blinded, processed_signed) = self.signer.sign_blinded_messages_filtered(blinded_messages);
-                let processed_ids = processed_blinded.iter().map(|msg| FixedBytes::<32>::from_slice(&Sha256::digest(&msg))).collect::<Vec<FixedBytes<32>>>();
+                let (processed_blinded, processed_signed) =
+                    self.signer.sign_blinded_messages_filtered(blinded_messages);
+                let processed_ids = processed_blinded
+                    .iter()
+                    .map(|msg| FixedBytes::<32>::from_slice(&Sha256::digest(&msg)))
+                    .collect::<Vec<FixedBytes<32>>>();
                 let mut processed_blind_sigs = Vec::new();
                 for i in 0..processed_signed.len() {
                     processed_blind_sigs.push(BlindedSignature {
@@ -243,7 +256,10 @@ impl EventParser for BuyGasTicketsParser {
                 };
 
                 let match_id = compute_ids_hash(&processed_ids);
-                (serde_json::to_value(event).unwrap_or(serde_json::Value::Null), match_id)
+                (
+                    serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+                    match_id,
+                )
             }
             Err(_e) => {
                 //eprintln!("Failed to decode BuyGasTickets event: {}", e);
@@ -279,16 +295,20 @@ impl EventParser for SendGasTicketsParser {
     fn parse_event(&self, log: Log) -> (serde_json::Value, String) {
         match log.log_decode::<IStealthGasStation::SendGasTickets>() {
             Ok(decoded_log) => {
-                println!("[PARSE SendGasTickets] :: {:?}", log.transaction_hash.unwrap_or_default());
+                println!(
+                    "[PARSE SendGasTickets] :: {:?}",
+                    log.transaction_hash.unwrap_or_default()
+                );
                 let match_id = compute_ids_hash(&decoded_log.inner.ids.clone());
                 let log_data = SendGasTicketsEventLog {
                     ids: decoded_log.inner.ids.clone(),
                     signed: decoded_log.inner.signed.clone(),
                 };
-                let event = SendGasTicketsEvent {
-                    log_data,
-                };
-                (serde_json::to_value(event).unwrap_or(serde_json::Value::Null), match_id)
+                let event = SendGasTicketsEvent { log_data };
+                (
+                    serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+                    match_id,
+                )
             }
             Err(_e) => {
                 //eprintln!("Failed to decode SendGasTickets event: {}", e);
@@ -325,16 +345,20 @@ impl EventParser for NativeTransfersParser {
     fn parse_event(&self, log: Log) -> (serde_json::Value, String) {
         match log.log_decode::<IStealthGasStation::NativeTransfers>() {
             Ok(decoded_log) => {
-                println!("[PARSE NativeTransfers] :: {:?}", log.transaction_hash.unwrap_or_default());
+                println!(
+                    "[PARSE NativeTransfers] :: {:?}",
+                    log.transaction_hash.unwrap_or_default()
+                );
                 let log_data = NativeTransfersEventLog {
                     amounts: decoded_log.inner.amounts.clone(),
                     targets: decoded_log.inner.targets.clone(),
                     data: decoded_log.inner.d.clone(),
                 };
-                let event = NativeTransfersEvent {
-                    log_data,
-                };
-                (serde_json::to_value(event).unwrap_or(serde_json::Value::Null), "".to_owned())
+                let event = NativeTransfersEvent { log_data };
+                (
+                    serde_json::to_value(event).unwrap_or(serde_json::Value::Null),
+                    "".to_owned(),
+                )
             }
             Err(_e) => {
                 //eprintln!("Failed to decode NativeTransfers event: {}", e);
