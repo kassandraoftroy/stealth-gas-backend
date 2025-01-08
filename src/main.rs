@@ -1,29 +1,29 @@
 mod collectors;
-mod rsasigner;
 mod fulfiller;
 mod gas_station_helper;
 mod http_server;
+mod rsasigner;
 mod sql;
 
-use fulfiller::Fulfiller;
-use blind_rsa_signatures::{KeyPair, SecretKey};
-use collectors::{BuyGasTicketsParser, Collector, NativeTransfersParser, SendGasTicketsParser};
-use alloy::primitives::Address;
-use alloy::providers::{ProviderBuilder, WsConnect};
+use crate::rsasigner::BlindSigner;
+use crate::sql::DbClient;
 use alloy::contract::{ContractInstance, Interface};
 use alloy::json_abi::JsonAbi;
 use alloy::network::EthereumWallet;
+use alloy::primitives::Address;
+use alloy::providers::{ProviderBuilder, WsConnect};
 use alloy::signers::local::PrivateKeySigner;
-use sqlx::PgPool;
-use std::env;
-use tokio;
-use eth_stealth_gas_tickets::TicketsVerifier;
-use crate::rsasigner::BlindSigner;
-use std::sync::Arc;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
+use blind_rsa_signatures::{KeyPair, SecretKey};
+use collectors::{BuyGasTicketsParser, Collector, NativeTransfersParser, SendGasTicketsParser};
+use eth_stealth_gas_tickets::TicketsVerifier;
+use fulfiller::Fulfiller;
 use hex;
 use http_server::start_http_server;
-use crate::sql::DbClient;
+use sqlx::PgPool;
+use std::env;
+use std::sync::Arc;
+use tokio;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -62,13 +62,12 @@ async fn main() -> anyhow::Result<()> {
     let ws = WsConnect::new(rpc_url.clone());
     let provider = ProviderBuilder::new().on_ws(ws).await?;
 
-    let abi = JsonAbi::parse(
-        [
-            "function coordinatorPubKey() external view returns (bytes memory)",
-            "function ticketCost() external view returns (uint256)",
-            "function shippingCost() external view returns (uint256)",
-        ]
-    ).expect("Failed to parse ABI");
+    let abi = JsonAbi::parse([
+        "function coordinatorPubKey() external view returns (bytes memory)",
+        "function ticketCost() external view returns (uint256)",
+        "function shippingCost() external view returns (uint256)",
+    ])
+    .expect("Failed to parse ABI");
 
     let contract = ContractInstance::new(contract_address, provider.clone(), Interface::new(abi));
 
@@ -83,7 +82,8 @@ async fn main() -> anyhow::Result<()> {
         .expect("Expected bytes output");
     let contract_pubkey_hex = "0x".to_string() + &hex::encode(contract_pubkey);
 
-    let tv = TicketsVerifier::from_hex_string(&contract_pubkey_hex).expect("Failed to parse coordinator pubkey");
+    let tv = TicketsVerifier::from_hex_string(&contract_pubkey_hex)
+        .expect("Failed to parse coordinator pubkey");
     if tv.public_key != pk {
         panic!("env rsa key does not match onchain rsa pubkey");
     }
@@ -94,7 +94,9 @@ async fn main() -> anyhow::Result<()> {
         .call()
         .await
         .expect("Failed to call ticketCost");
-    let (ticket_cost, _) = ticket_cost_val[0].as_uint().expect("Failed to get ticket cost");
+    let (ticket_cost, _) = ticket_cost_val[0]
+        .as_uint()
+        .expect("Failed to get ticket cost");
 
     let rsa_key_pair = KeyPair { pk, sk };
     let rsa_signer = Arc::new(BlindSigner::new(rsa_key_pair));
@@ -141,19 +143,26 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(signer_provider.clone()),
     );
 
-    println!("[STARTUP]: starting coordinator with key: {}", contract_pubkey_hex);
+    println!(
+        "[STARTUP]: starting coordinator with key: {}",
+        contract_pubkey_hex
+    );
 
     let buy_gas_tickets_collector_clone = buy_gas_tickets_collector.clone();
     let send_gas_tickets_collector_clone = send_gas_tickets_collector.clone();
 
-    println!("[STARTUP]: starting collectors from start block: {}", start_block);
+    println!(
+        "[STARTUP]: starting collectors from start block: {}",
+        start_block
+    );
 
     tokio::spawn(buy_gas_tickets_collector.run());
     tokio::spawn(send_gas_tickets_collector.run());
     tokio::spawn(native_transfers_collector.run());
 
     println!("[STARTUP]: waiting for collectors to be live");
-    while !buy_gas_tickets_collector_clone.is_live() || !send_gas_tickets_collector_clone.is_live() {
+    while !buy_gas_tickets_collector_clone.is_live() || !send_gas_tickets_collector_clone.is_live()
+    {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 
@@ -164,7 +173,15 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[STARTUP]: starting HTTP server");
     let verifier = Arc::new(tv);
-    start_http_server(ticket_cost, contract_address, eth_signer_address, Arc::new(signer_provider), verifier, db_client).await;
+    start_http_server(
+        ticket_cost,
+        contract_address,
+        eth_signer_address,
+        Arc::new(signer_provider),
+        verifier,
+        db_client,
+    )
+    .await;
 
     Ok(())
 }

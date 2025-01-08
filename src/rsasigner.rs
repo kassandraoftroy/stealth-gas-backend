@@ -1,5 +1,5 @@
-use blind_rsa_signatures::{KeyPair, Options};
 use alloy::primitives::Bytes;
+use blind_rsa_signatures::{KeyPair, Options};
 use rand::thread_rng;
 
 pub struct BlindSigner {
@@ -28,9 +28,13 @@ impl BlindSigner {
             .map_err(|e| format!("Failed to sign blinded message: {}", e))
     }
 
-    pub fn sign_blinded_messages_filtered(&self, blinded_messages: Vec<Bytes>) -> (Vec<Bytes>, Vec<Bytes>) {
+    pub fn sign_blinded_messages_filtered(
+        &self,
+        blinded_messages: Vec<Bytes>,
+    ) -> (Vec<Bytes>, Vec<Bytes>) {
         let mut rng = thread_rng();
-        blinded_messages.into_iter()
+        blinded_messages
+            .into_iter()
             .filter_map(|msg| {
                 self.sign_blinded_message(&mut rng, msg.clone())
                     .ok()

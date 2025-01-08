@@ -1,11 +1,11 @@
 use alloy::{
-    primitives::{Bytes, FixedBytes, U256, Address},
+    primitives::{Address, Bytes, FixedBytes, U256},
     providers::Provider,
     sol,
     transports::Transport,
 };
-use serde::Serialize;
 use eth_stealth_gas_tickets::BlindedSignature;
+use serde::Serialize;
 
 sol! {
     #[derive(Debug, Serialize)]
@@ -30,15 +30,8 @@ where
     P: Provider<T> + Send + Sync + 'static,
 {
     fn init(address: Address, provider: P) -> Self;
-    fn payload_send_gas_tickets(
-        &self,
-        blind_sigs: Vec<BlindedSignature>
-    ) -> StealthGasPayload;
-    fn payload_send_gas(
-        &self,
-        amounts: Vec<U256>,
-        targets: Vec<Address>
-    ) -> StealthGasPayload;
+    fn payload_send_gas_tickets(&self, blind_sigs: Vec<BlindedSignature>) -> StealthGasPayload;
+    fn payload_send_gas(&self, amounts: Vec<U256>, targets: Vec<Address>) -> StealthGasPayload;
 }
 
 impl<T, P> StealthGasStationHelper<T, P> for IStealthGasStationInstance<T, P>
@@ -50,12 +43,11 @@ where
         IStealthGasStationInstance::new(address, provider)
     }
 
-    fn payload_send_gas_tickets(
-        &self,
-        blind_sigs: Vec<BlindedSignature>,
-    ) -> StealthGasPayload {
-        let (ids, signatures): (Vec<FixedBytes<32>>, Vec<Bytes>) =
-            blind_sigs.into_iter().map(|sig| (sig.id, sig.blind_sig)).unzip();
+    fn payload_send_gas_tickets(&self, blind_sigs: Vec<BlindedSignature>) -> StealthGasPayload {
+        let (ids, signatures): (Vec<FixedBytes<32>>, Vec<Bytes>) = blind_sigs
+            .into_iter()
+            .map(|sig| (sig.id, sig.blind_sig))
+            .unzip();
 
         StealthGasPayload {
             data: self
@@ -66,13 +58,12 @@ where
         }
     }
 
-    fn payload_send_gas(
-        &self,
-        amounts: Vec<U256>,
-        targets: Vec<Address>
-    ) -> StealthGasPayload {
+    fn payload_send_gas(&self, amounts: Vec<U256>, targets: Vec<Address>) -> StealthGasPayload {
         StealthGasPayload {
-            data: self.sendGas(amounts.clone(), targets, Bytes::new()).calldata().to_owned(),
+            data: self
+                .sendGas(amounts.clone(), targets, Bytes::new())
+                .calldata()
+                .to_owned(),
             value: U256::ZERO,
         }
     }
