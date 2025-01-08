@@ -18,6 +18,7 @@ sol! {
 
 pub use IStealthGasStation::IStealthGasStationInstance;
 
+#[derive(Debug)]
 pub struct StealthGasPayload {
     pub data: Bytes,
     pub value: U256,
@@ -71,8 +72,8 @@ where
         targets: Vec<Address>
     ) -> StealthGasPayload {
         StealthGasPayload {
-            data: self.sendGas(amounts.clone(), targets, Bytes::default()).calldata().to_owned(),
-            value: amounts.into_iter().sum(),
+            data: self.sendGas(amounts.clone(), targets, Bytes::new()).calldata().to_owned(),
+            value: U256::ZERO,
         }
     }
 }

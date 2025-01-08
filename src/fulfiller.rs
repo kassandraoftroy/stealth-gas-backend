@@ -1,20 +1,24 @@
 use alloy::{
-    network::TransactionBuilder,
-    primitives::Address,
-    providers::Provider,
+    network::{TransactionBuilder, Network},
+    primitives::{Address, FixedBytes, U256},
+    providers::{Provider, PendingTransactionBuilder},
     pubsub::PubSubFrontend,
-    rpc::types::TransactionRequest
+    rpc::types::TransactionRequest,
+    transports::Transport,
 };
 use crate::gas_station_helper::{StealthGasStationHelper, IStealthGasStationInstance};
 use eth_stealth_gas_tickets::BlindedSignature;
-use sqlx::PgPool;
-use serde_json::Value;
 use std::sync::Arc;
-use sqlx::Row;
-use sqlx::types::chrono::{DateTime, Utc};
+use sqlx::types::chrono::Utc;
+use crate::sql::{DbClient, EventState};
+use crate::http_server::Spend;
+
+pub fn get_hash_from_builder<T: Transport + Clone, N: Network>(builder: &PendingTransactionBuilder<T, N>) -> FixedBytes<32> {
+    *builder.tx_hash()
+}
 
 pub struct Fulfiller<P: Provider<PubSubFrontend>> {
-    pub db_pool: PgPool,
+    pub db_client: DbClient,
     pub contract_address: Address,
     pub signer_address: Address,
     pub provider: Arc<P>,
@@ -22,13 +26,13 @@ pub struct Fulfiller<P: Provider<PubSubFrontend>> {
 
 impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
     pub fn new(
-        db_pool: PgPool,
+        db_client: DbClient,
         contract_address: Address,
         signer_address: Address,
         provider: Arc<P>,
     ) -> Self {
         Self {
-            db_pool,
+            db_client,
             contract_address,
             signer_address,
             provider,
@@ -37,66 +41,41 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
 
     pub async fn run(&self) -> Result<(), String> {
         loop {
-            if let Err(e) = self.check_pending_and_included_events().await {
-                eprintln!("Error checking pending/included events: {}", e);
+            if let Err(e) = self.check_and_sync_buy_events().await {
+                eprintln!("Error checking pending/included buys: {}", e);
             }
-            if let Err(e) = self.process_next_event().await {
-                eprintln!("Error processing event: {}", e);
+            if let Err(e) = self.process_next_buy_event().await {
+                eprintln!("Error processing buy: {}", e);
+            }
+            if let Err(e) = self.check_and_sync_spends().await {
+                eprintln!("Error checking pending/included spends: {}", e);
+            }
+            if let Err(e) = self.process_next_spend().await {
+                eprintln!("Error processing spend: {}", e);
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
         }
     }
 
-    async fn process_next_event(&self) -> Result<(), String> {
-        let row = sqlx::query(
-            "SELECT transaction_hash, log_index, event_data, retry FROM events 
-             WHERE event_kind = $1 AND event_state = 'INDEXED' AND removed = false 
-             ORDER BY updated_at ASC LIMIT 1",
-        )
-        .bind("BuyGasTickets")
-        .fetch_optional(&self.db_pool)
-        .await
-        .map_err(|e| format!("Failed to fetch events: {}", e))?;
-
-        if let Some(row) = row {
-            let transaction_hash: String = row.get("transaction_hash");
-            let log_index: i32 = row.get("log_index");
-            let event_data: Value = row.get("event_data");
-            let retry: i32 = row.get("retry");
+    async fn process_next_buy_event(&self) -> Result<(), String> {
+        if let Some(event) = self.db_client.get_next_buy_event().await? {
+            let transaction_hash = event.transaction_hash;
+            let log_index = event.log_index;
+            let event_data = event.event_data;
 
             let blind_sigs: Vec<BlindedSignature> = serde_json::from_value(event_data["processed_data"]["blind_sigs"].clone())
                 .map_err(|e| format!("Failed to parse blind signatures: {}", e))?;
             
-            if blind_sigs.is_empty() || retry > 99 {
-                sqlx::query(
-                    "UPDATE events SET event_state = 'DISCARDED', updated_at = NOW() 
-                     WHERE transaction_hash = $1 AND log_index = $2",
-                )
-                .bind(&transaction_hash)
-                .bind(log_index)
-                .execute(&self.db_pool)
-                .await
-                .map_err(|e| format!("Failed to update event state: {}", e))?;
+            if blind_sigs.is_empty() {
+                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Discarded).await?;
                 return Ok(());
             }
 
-            sqlx::query(
-                "UPDATE events SET event_state = 'PENDING', updated_at = NOW() 
-                 WHERE transaction_hash = $1 AND log_index = $2",
-            )
-            .bind(&transaction_hash)
-            .bind(log_index)
-            .execute(&self.db_pool)
-            .await
-            .map_err(|e| format!("Failed to update event state: {}", e))?;
+            self.db_client.update_event_state(&transaction_hash, log_index, EventState::Pending).await?;
 
-            if let Err(e) = self
-                .dispatch_send_gas_tickets(&transaction_hash, log_index, retry + 1, blind_sigs)
-                .await
-            {
-                eprintln!("Error dispatching sendGasTickets: {}", e);
-            }
+            self.dispatch_send_gas_tickets(&transaction_hash, log_index, blind_sigs)
+                .await.map_err(|e| format!("Error dispatching sendGasTickets: {}", e))?;
         }
         Ok(())
     }
@@ -105,17 +84,18 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
         &self,
         transaction_hash: &str,
         log_index: i32,
-        retry: i32,
         blind_sigs: Vec<BlindedSignature>,
     ) -> Result<(), String> {
         let contract = IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
         let payload = contract.payload_send_gas_tickets(blind_sigs);
 
+        let nonce = self.provider.get_transaction_count(self.signer_address).await.map_err(|e| e.to_string())?;
         let mut tx_request = TransactionRequest::default()
             .with_from(self.signer_address)
             .with_to(self.contract_address)
             .with_input(payload.data)
             .with_value(payload.value)
+            .with_nonce(nonce)
             .with_max_fee_per_gas(500000000000)
             .with_max_priority_fee_per_gas(1000000000);
 
@@ -124,126 +104,174 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                 tx_request = tx_request.with_gas_limit(gas_limit + 25000);
             }
             Err(e) => {
-                sqlx::query(
-                    "UPDATE events SET event_state = 'INDEXED', retry = $3, updated_at = NOW() 
-                     WHERE transaction_hash = $1 AND log_index = $2",
-                )
-                .bind(transaction_hash)
-                .bind(log_index)
-                .bind(retry)
-                .execute(&self.db_pool)
-                .await
-                .map_err(|ee| format!("Failed to update event state: {}", ee))?;
+                self.db_client.update_event_state(transaction_hash, log_index, EventState::Indexed).await?;
 
                 return Err(format!("Failed to estimate gas: {}", e));
             }
         }
 
-        println!("[TX attempt]: {:?}", transaction_hash);
-        let tx_hash = self
+        println!("[TX attempt] for event: {}", transaction_hash);
+        let builder = self
             .provider
             .send_transaction(tx_request)
             .await
-            .map_err(|e| e.to_string())?
-            .with_required_confirmations(2)
-            .with_timeout(Some(std::time::Duration::from_secs(120)))
-            .watch()
-            .await
             .map_err(|e| e.to_string())?;
 
-        let receipt = self.provider.get_transaction_receipt(tx_hash).await.map_err(|e| e.to_string())?;
-        match receipt {
-            Some(receipt) => {
-                if !receipt.status() {
-                    sqlx::query(
-                        "UPDATE events SET event_state = 'INDEXED', retry = $3, updated_at = NOW() 
-                    WHERE transaction_hash = $1 AND log_index = $2",
-                    )
-                    .bind(transaction_hash)
-                    .bind(log_index)
-                    .bind(retry)
-                    .execute(&self.db_pool)
-                    .await
-                    .map_err(|e| format!("Failed to update event state: {}", e))?;
+        let tx_hash = format!("0x{}", hex::encode(get_hash_from_builder(&builder)));
 
-                    return Err("Transaction reverted onchain".to_string());
-                }
-            }
-            None => {
-                return Err("Transaction not found".to_string());
-            }
-        }
-
-        sqlx::query(
-            "UPDATE events SET event_state = 'INCLUDED', updated_at = NOW() 
-             WHERE transaction_hash = $1 AND log_index = $2",
-        )
-        .bind(transaction_hash)
-        .bind(log_index)
-        .execute(&self.db_pool)
-        .await
-        .map_err(|e| format!("Failed to update event state: {}", e))?;
-
-        println!("[TX included]: {} (hash: {:?})", transaction_hash, tx_hash);
+        self.db_client.update_event_tx_data(transaction_hash, log_index, &tx_hash, nonce as i64).await?;
 
         Ok(())
     }
 
-    async fn check_pending_and_included_events(&self) -> Result<(), String> {
-        let rows = sqlx::query(
-            "SELECT transaction_hash, log_index, event_data, match_id, updated_at FROM events 
-             WHERE event_kind = $1 AND event_state IN ('PENDING', 'INCLUDED', 'INDEXED') AND removed = false",
-        )
-        .bind("BuyGasTickets")
-        .fetch_all(&self.db_pool)
-        .await
-        .map_err(|e| format!("Failed to fetch pending/included events: {}", e))?;
+    async fn process_next_spend(&self) -> Result<(), String> {
+        if let Some(spend) = self.db_client.get_next_spend().await? {
+            let contract = IStealthGasStationInstance::init(self.contract_address, self.provider.clone());
+            let (amounts, receivers): (Vec<U256>, Vec<Address>) =
+                serde_json::from_value::<Vec<Spend>>(spend.spend_data.clone())
+                    .unwrap()
+                    .into_iter()
+                    .map(|spend| (spend.amount, spend.receiver))
+                    .unzip();
 
-        for row in rows {
-            let transaction_hash: String = row.get("transaction_hash");
-            let log_index: i32 = row.get("log_index");
-            let match_id: String = row.get("match_id");
-            let updated_at: DateTime<Utc> = row.get("updated_at");
+            self.db_client.update_spend_state(spend.id, EventState::Pending).await?;
+            let payload = contract.payload_send_gas(amounts, receivers);
 
-            let matching_event = sqlx::query(
-                "SELECT transaction_hash, log_index FROM events 
-                 WHERE event_kind = 'SendGasTickets' 
-                 AND match_id = $1",
-            )
-            .bind(&match_id)
-            .fetch_optional(&self.db_pool)
-            .await
-            .map_err(|e| format!("Failed to check matching SendGasTickets event: {}", e))?;
+            let nonce = self.provider.get_transaction_count(self.signer_address).await.map_err(|e| e.to_string())?;
+            let mut tx_request = TransactionRequest::default()
+                .with_from(self.signer_address)
+                .with_to(self.contract_address)
+                .with_input(payload.data)
+                .with_value(payload.value)
+                .with_nonce(nonce)
+                .with_max_fee_per_gas(500000000000)
+                .with_max_priority_fee_per_gas(1000000000);
 
-            if matching_event.is_some() {
-                println!("[FULFILLED]: {}", transaction_hash);
-                sqlx::query(
-                    "UPDATE events SET event_state = 'FULFILLED', updated_at = NOW() 
-                     WHERE transaction_hash = $1 AND log_index = $2",
-                )
-                .bind(transaction_hash)
-                .bind(log_index)
-                .execute(&self.db_pool)
-                .await
-                .map_err(|e| format!("Failed to fulfill event: {}", e))?;
-            } else {
-                println!("[NOT FULFILLED]: {}", transaction_hash);
-                let now = Utc::now();
-                let elapsed_time = now.signed_duration_since(updated_at);
-
-                if elapsed_time.num_minutes() > 25 {
-                    println!("[RETURNED TO INDEXED]: {}", transaction_hash);
-                    sqlx::query(
-                        "UPDATE events SET event_state = 'INDEXED', updated_at = NOW() 
-                         WHERE transaction_hash = $1 AND log_index = $2",
-                    )
-                    .bind(transaction_hash)
-                    .bind(log_index)
-                    .execute(&self.db_pool)
-                    .await
-                    .map_err(|e| format!("Failed to revert event state: {}", e))?;
+            match self.provider.estimate_gas(&tx_request).await {
+                Ok(gas_limit) => {
+                    tx_request = tx_request.with_gas_limit(gas_limit + 25000);
+                }
+                Err(e) => {
+                    return Err(format!("Failed to estimate gas: {}", e));
                 }
             }
+
+            println!("[TX attempt] for spend: {}", spend.id);
+            let builder = self
+                .provider
+                .send_transaction(tx_request)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let tx_hash = format!("0x{}", hex::encode(get_hash_from_builder(&builder)));
+            self.db_client.update_spend_tx_data(spend.id, &tx_hash, nonce as i64).await?;
+        }
+        Ok(())
+    }
+
+    async fn check_and_sync_buy_events(&self) -> Result<(), String> {
+        let pending_events = self.db_client.get_unfulfilled_buys().await?;
+
+        for event in pending_events {
+            let transaction_hash = event.transaction_hash;
+            let log_index = event.log_index;
+            let match_id = event.match_id;
+            let updated_at = event.updated_at;
+            let fulfill_tx_hash = event.fulfill_tx_hash;
+            let event_state = event.event_state;
+
+            let now = Utc::now();
+            let elapsed_time = now.signed_duration_since(updated_at);
+
+            if !fulfill_tx_hash.is_empty() && (event_state == EventState::Pending || 
+                (event_state == EventState::Included && elapsed_time.num_minutes() > 29)) {
+                let fulfill_tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(hex::decode(fulfill_tx_hash.replace("0x", "")).unwrap_or_default().as_slice());
+                let mut state = EventState::Pending;
+                match self.provider.get_transaction_receipt(fulfill_tx_hash_bytes).await {
+                    Ok(receipt) => {
+                        if receipt.is_some() {
+                            if receipt.unwrap().status() {
+                                state = EventState::Included;
+                            } else {
+                                state = EventState::Indexed;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        println!("[INFO]Error finding tx receipt: {:?}", e);
+                    }
+                }
+                if state != event_state {
+                    println!("[PENDING TX] event: {}, updating state: {} -> {}", 
+                        transaction_hash, event_state.as_str(), state.as_str());
+                    self.db_client.update_event_state(&transaction_hash, log_index, state).await?;
+
+                    continue;
+                }
+            }
+
+            if self.db_client.check_matching_send_gas_tickets(&match_id).await? {
+                println!("[FULFILLED BUY]: {}", transaction_hash);
+                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Fulfilled).await?;
+            } else if elapsed_time.num_minutes() > 29 && event_state == EventState::Pending {
+                println!("[RETURN BUY TO INDEXED]: {}", transaction_hash);
+                self.db_client.update_event_state(&transaction_hash, log_index, EventState::Indexed).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn check_and_sync_spends(&self) -> Result<(), String> {
+        let empty_msg_ids = self.db_client.get_msg_ids_from_spend_id(0).await?;
+        for msg_id in empty_msg_ids {
+            self.db_client.delete_ticket(&msg_id).await?;
+        }
+
+        let pending_spends = self.db_client.get_unfulfilled_spends().await?;
+        let now = Utc::now();
+
+        for spend in pending_spends {
+            if self.db_client.check_matching_native_transfer(&spend.tx_hash).await? {
+                println!("[FULFILLED SPEND] spend: {}, tx: {}", spend.id, spend.tx_hash);
+                self.db_client.update_spend_state(spend.id, EventState::Fulfilled).await?;
+
+                continue;
+            }
+            let elapsed_time = now.signed_duration_since(spend.updated_at);
+            if spend.spend_state == EventState::Pending || 
+                (spend.spend_state == EventState::Included && elapsed_time.num_minutes() > 29) {
+                let tx_hash_bytes: FixedBytes<32> = FixedBytes::from_slice(hex::decode(spend.tx_hash.replace("0x", "")).unwrap_or_default().as_slice());
+                let mut state = EventState::Pending;
+                match self.provider.get_transaction_receipt(tx_hash_bytes).await {
+                    Ok(receipt) => {
+                        if receipt.is_some() {
+                            if receipt.unwrap().status() {
+                                state = EventState::Included;
+                            } else {
+                                state = EventState::Indexed;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        println!("[INFO] Error finding tx receipt: {:?}", e);
+                    }
+                }
+                if state != spend.spend_state {
+                    println!("[PENDING SPEND TX] spend: {}, updating state: {} -> {}", 
+                        spend.id, spend.spend_state.as_str(), state.as_str());
+                    self.db_client.update_spend_state(spend.id, state).await?;
+
+                    continue;
+                }
+            }
+            if elapsed_time.num_minutes() > 29 && spend.spend_state == EventState::Pending {
+                println!("[RETURN SPEND TO INDEXED]: {}", spend.id);
+                self.db_client.update_spend_state(spend.id, EventState::Indexed).await?;
+
+                continue;
+            }
+
         }
 
         Ok(())
