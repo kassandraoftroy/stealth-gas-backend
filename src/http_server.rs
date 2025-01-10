@@ -17,6 +17,7 @@ use eth_stealth_gas_tickets::{SignedTicket, TicketsVerifier};
 use rocket::{get, post, routes, serde::json::Json, State};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use rocket::config::{Config, TlsConfig};
 
 type CombinedFiller = JoinFill<
     JoinFill<
@@ -245,6 +246,42 @@ pub async fn start_http_server(
     };
 
     rocket::build()
+        .manage(state)
+        .mount(
+            "/",
+            routes![hello, contract_address, chain_id, validate_tickets, redeem],
+        )
+        .launch()
+        .await
+        .expect("Failed to launch Rocket server");
+}
+
+pub async fn start_http_server_with_ssl(
+    ticket_cost: U256,
+    contract_address: Address,
+    signer_address: Address,
+    provider: AppProvider,
+    verifier: Arc<TicketsVerifier>,
+    db_client: DbClient,
+    tls_cert_path: String,
+    tls_key_path: String,
+) {
+    let state = AppState {
+        ticket_cost,
+        contract_address,
+        signer_address,
+        provider,
+        verifier,
+        db_client,
+    };
+
+    // Configure Rocket for HTTPS
+    let config = Config::figment()
+        .merge(("port", 8000))
+        .merge(("address", "0.0.0.0"))
+        .merge(("tls", TlsConfig::from_paths(&tls_cert_path, &tls_key_path)));
+
+    rocket::custom(config)
         .manage(state)
         .mount(
             "/",

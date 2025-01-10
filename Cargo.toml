@@ -20,5 +20,5 @@ rand = "0.8"
 sha2 = "0.10.8"
 base64 = "0.22"
 hex = "0.4"
-rocket = { version = "0.5.1", features = ["json"] }
+rocket = { version = "0.5.1", features = ["json", "tls"] }
 eth-stealth-gas-tickets = "0.3.0"
