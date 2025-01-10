@@ -4,8 +4,40 @@ a backend that listens to and fulfills stealth gas ticket requests using [this s
 
 eventually it will deploy and run inside a TEE (trusted execution environment)
 
-## setup
+## Setup
 
-1. `cargo build`
-2. `cargo run`
+```
+touch .env
+```
 
+you need to fill out .env file (see .env.example)
+
+```
+docker-compose build
+```
+
+```
+docker-compose up -d db
+```
+
+```
+chmod +x scripts/setup.sh
+```
+
+```
+scripts/setup.sh
+```
+
+```
+docker-compose up
+```
+
+## Tear down
+
+```
+docker-compose down -v
+```
+
+```
+docker system prune -af
+```
