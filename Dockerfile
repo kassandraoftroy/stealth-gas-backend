@@ -6,6 +6,8 @@ WORKDIR /app
 # Copy project files, excluding those in .dockerignore
 COPY . .
 
+RUN cargo install sqlx-cli
+
 # Install dependencies and build the project in release mode
 RUN cargo build --release
 

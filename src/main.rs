@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Load environment variables
     let mode = env::var("MODE").unwrap_or_else(|_| "DEV".to_string());
-    let rpc_url = env::var("RPC_URL").expect("RPC_URL not set");
+    let rpc_url = env::var("WS_RPC_URL").expect("RPC_URL not set");
     let contract_address: Address = env::var("CONTRACT_ADDRESS")
         .expect("CONTRACT_ADDRESS not set")
         .parse()
