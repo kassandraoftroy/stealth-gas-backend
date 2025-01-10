@@ -235,19 +235,20 @@ impl DbClient {
 
     // Ticket Operations
     pub async fn check_ticket_used(&self, msg_id: &str) -> Result<bool, String> {
-        sqlx::query!("SELECT COUNT(*) FROM tickets WHERE message_id = $1", msg_id)
+        sqlx::query("SELECT COUNT(*) FROM tickets WHERE message_id = $1")
+            .bind(msg_id)
             .fetch_one(&self.pool)
             .await
-            .map(|row| row.count.unwrap_or(0) > 0)
+            .map(|row| row.get::<Option<i64>, _>(0).unwrap_or(0) > 0)
             .map_err(|e| format!("Failed to check ticket usage: {}", e))
     }
 
     pub async fn insert_new_ticket(&self, msg_id: &str, sig: &str) -> Result<(), String> {
-        sqlx::query!(
-            "INSERT INTO tickets (message_id, sig) VALUES ($1, $2)",
-            msg_id,
-            sig
+        sqlx::query(
+            "INSERT INTO tickets (message_id, sig) VALUES ($1, $2)"
         )
+        .bind(msg_id)
+        .bind(sig)
         .execute(&self.pool)
         .await
         .map_err(|e| format!("Failed to store ticket: {}", e))?;
@@ -256,7 +257,8 @@ impl DbClient {
     }
 
     pub async fn delete_ticket(&self, msg_id: &str) -> Result<(), String> {
-        sqlx::query!("DELETE FROM tickets WHERE message_id = $1", msg_id)
+        sqlx::query("DELETE FROM tickets WHERE message_id = $1")
+            .bind(msg_id)
             .execute(&self.pool)
             .await
             .map_err(|e| format!("Failed to delete ticket: {}", e))?;
@@ -293,16 +295,16 @@ impl DbClient {
         tx_hash: &str,
         tx_nonce: i32,
     ) -> Result<i32, String> {
-        sqlx::query!(
-            "INSERT INTO spends (spend_state, spend_data, tx_hash, tx_nonce) VALUES ($1, $2, $3, $4) RETURNING id",
-            EventState::Pending.as_str(),
-            spends,
-            tx_hash,
-            tx_nonce
+        sqlx::query(
+            "INSERT INTO spends (spend_state, spend_data, tx_hash, tx_nonce) VALUES ($1, $2, $3, $4) RETURNING id"
         )
+        .bind(EventState::Pending.as_str())
+        .bind(spends)
+        .bind(tx_hash)
+        .bind(tx_nonce)
         .fetch_one(&self.pool)
         .await
-        .map(|row| row.id)
+        .map(|row| row.get::<i32, _>("id"))
         .map_err(|e| format!("Failed to store spend: {}", e))
     }
 

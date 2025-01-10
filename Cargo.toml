@@ -3,6 +3,10 @@ name = "stealth-gas-backend"
 version = "0.0.1"
 edition = "2021"
 
+[[bin]]
+name = "eth_stealth_gas_tickets"
+path = "src/main.rs"
+
 [dependencies]
 alloy = { version = "0.9.2", features = ["full"] }
 tokio = { version = "1.42.0", features = ["full"] }

@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    container_name: stealth_gas_db
+    environment:
+      POSTGRES_USER: <USER>
+      POSTGRES_PASSWORD: <PWD>
+      POSTGRES_DB: <DB_NAME>
+    networks:
+      - stealth_gas_net
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    image: stealth_gas_app
+    container_name: stealth_gas_app
+    environment:
+      DATABASE_URL: <YOUR DATABASE URL HERE>
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - stealth_gas_net
+    ports:
+      - "8000:8000"
+
+networks:
+  stealth_gas_net:
+    driver: bridge
+

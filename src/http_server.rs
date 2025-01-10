@@ -245,7 +245,12 @@ pub async fn start_http_server(
         db_client,
     };
 
-    rocket::build()
+        rocket::build()
+        .configure(rocket::Config {
+            address: std::net::Ipv4Addr::new(0, 0, 0, 0).into(),
+            port: 8000,
+            ..Default::default()
+        })
         .manage(state)
         .mount(
             "/",
