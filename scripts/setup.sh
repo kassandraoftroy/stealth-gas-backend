@@ -21,7 +21,7 @@ if docker-compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt" | 
 else
   echo "Running migrations..."
   docker run --rm \
-    --network "${POSTGRES_DB}_stealth_gas_net" \
+    --network "stealth-gas-backend_stealth_gas_net" \
   -v "$(pwd):/app" \
   -w /app \
   -e DATABASE_URL="$DATABASE_URL" \
