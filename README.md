@@ -35,7 +35,7 @@ docker-compose up
 ## Tear down
 
 ```
-docker-compose down -v
+docker-compose down
 ```
 
 ```

@@ -12,6 +12,8 @@ services:
       - stealth_gas_net
     ports:
       - "5432:5432"
+    volumes:
+      - stealth_gas_db_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 10s
@@ -36,3 +38,6 @@ services:
 networks:
   stealth_gas_net:
     driver: bridge
+
+volumes:
+  stealth_gas_db_data:
