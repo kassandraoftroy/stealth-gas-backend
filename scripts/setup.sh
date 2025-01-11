@@ -20,6 +20,7 @@ if docker-compose exec db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\dt" | 
   echo "Database already exists. Skipping migrations."
 else
   echo "Running migrations..."
+  echo "DATABASE_URL: $DATABASE_URL"
   docker run --rm \
     --network "stealth-gas-backend_stealth_gas_net" \
   -v "$(pwd):/app" \
