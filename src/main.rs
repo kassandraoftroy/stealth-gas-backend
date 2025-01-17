@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
 
     // Load environment variables
-    let mode = env::var("MODE").unwrap_or_else(|_| "DEV".to_string());
+    // let mode = env::var("MODE").unwrap_or_else(|_| "DEV".to_string());
     let rpc_url = env::var("WS_RPC_URL").expect("RPC_URL not set");
     let contract_address: Address = env::var("CONTRACT_ADDRESS")
         .expect("CONTRACT_ADDRESS not set")
@@ -174,16 +174,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("[STARTUP]: starting HTTP server");
 
-    if mode == "PROD" {
-        // Load TLS configuration from environment variables
-        let tls_cert_path = env::var("TLS_CERT_PATH").expect("TLS_CERT_PATH not set");
-        let tls_key_path = env::var("TLS_KEY_PATH").expect("TLS_KEY_PATH not set");
-        // SSL setup for PROD
-        start_http_server_with_ssl(ticket_cost, contract_address, eth_signer_address, Arc::new(signer_provider), Arc::new(tv), db_client, tls_cert_path, tls_key_path).await;
-    } else {
-        // Plain HTTP for DEV
-        start_http_server(ticket_cost, contract_address, eth_signer_address, Arc::new(signer_provider), Arc::new(tv), db_client).await;
-    }
+    start_http_server(ticket_cost, contract_address, eth_signer_address, Arc::new(signer_provider), Arc::new(tv), db_client).await;
 
     Ok(())
 }
