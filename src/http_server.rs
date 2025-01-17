@@ -168,10 +168,12 @@ async fn redeem(
         .with_input(payload.data)
         .with_max_fee_per_gas(500000000000)
         .with_max_priority_fee_per_gas(1000000000);
-
+    println!("SIMULATING");
     match state.provider.estimate_gas(&tx_request).await {
         Ok(gas_limit) => {
+            println!("SIMULATION SUCCESS");
             if gas_limit < 1000000 {
+                println!("Gas limit: {}", gas_limit);
                 tx_request = tx_request.with_gas_limit(gas_limit + 25000);
             } else {
                 return Err("Tx exceeds gas limit (1 million)".to_string());
