@@ -162,21 +162,27 @@ async fn redeem(
         .get_transaction_count(state.signer_address)
         .await
         .map_err(|e| e.to_string())?;
-    let tx_request = TransactionRequest::default()
+    let mut tx_request = TransactionRequest::default()
         .with_to(state.contract_address)
         .with_nonce(nonce)
         .with_input(payload.data)
         .with_max_fee_per_gas(500000000000)
         .with_max_priority_fee_per_gas(1000000000);
-
-    // match state.provider.estimate_gas(&tx_request).await {
-    //     Ok(gas_limit) => {
-    //         tx_request = tx_request.with_gas_limit(gas_limit + 25000);
-    //     }
-    //     Err(e) => {
-    //         return Err(e.to_string());
-    //     }
-    // }
+    println!("SIMULATING");
+    match state.provider.estimate_gas(&tx_request).await {
+        Ok(gas_limit) => {
+            println!("SIMULATION SUCCESS");
+            if gas_limit < 1000000 {
+                println!("Gas limit: {}", gas_limit);
+                tx_request = tx_request.with_gas_limit(gas_limit + 25000);
+            } else {
+                return Err("Tx exceeds gas limit (1 million)".to_string());
+            }
+        }
+        Err(e) => {
+            return Err(e.to_string());
+        }
+    }
 
     for sig in &spend_request.signatures {
         let msg_id = format!(
