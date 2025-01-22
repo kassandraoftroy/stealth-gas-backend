@@ -19,7 +19,7 @@ use collectors::{BuyGasTicketsParser, Collector, NativeTransfersParser, SendGasT
 use eth_stealth_gas_tickets::TicketsVerifier;
 use fulfiller::Fulfiller;
 use hex;
-use http_server::{start_http_server, start_http_server_with_ssl};
+use http_server::start_http_server;
 use sqlx::PgPool;
 use std::env;
 use std::sync::Arc;
