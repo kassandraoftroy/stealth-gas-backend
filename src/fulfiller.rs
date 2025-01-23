@@ -162,23 +162,24 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                 .get_transaction_count(self.signer_address)
                 .await
                 .map_err(|e| e.to_string())?;
-            let mut tx_request = TransactionRequest::default()
+            let tx_request = TransactionRequest::default()
                 .with_from(self.signer_address)
                 .with_to(self.contract_address)
                 .with_input(payload.data)
                 .with_value(payload.value)
                 .with_nonce(nonce)
                 .with_max_fee_per_gas(500000000000)
-                .with_max_priority_fee_per_gas(1000000000);
+                .with_max_priority_fee_per_gas(1000000000)
+                .with_gas_limit(2500000);
 
-            match self.provider.estimate_gas(&tx_request).await {
-                Ok(gas_limit) => {
-                    tx_request = tx_request.with_gas_limit(gas_limit + 25000);
-                }
-                Err(e) => {
-                    return Err(format!("Failed to estimate gas: {}", e));
-                }
-            }
+            // match self.provider.estimate_gas(&tx_request).await {
+            //     Ok(gas_limit) => {
+            //         tx_request = tx_request.with_gas_limit(gas_limit + 25000);
+            //     }
+            //     Err(e) => {
+            //         return Err(format!("Failed to estimate gas: {}", e));
+            //     }
+            // }
 
             println!("[TX attempt] for spend: {}", spend.id);
             let builder = self
@@ -313,7 +314,7 @@ impl<P: Provider<PubSubFrontend> + 'static> Fulfiller<P> {
                             if receipt.unwrap().status() {
                                 state = EventState::Included;
                             } else {
-                                state = EventState::Indexed;
+                                state = EventState::Discarded;
                             }
                         }
                     }
