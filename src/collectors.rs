@@ -20,6 +20,7 @@ pub struct Collector<T: EventParser> {
     provider: Arc<RootProvider<PubSubFrontend>>,
     parser: T,
     filter: Filter,
+    start_block: u64,
     db_client: DbClient,
     live: Arc<AtomicBool>,
 }
@@ -56,12 +57,13 @@ impl<T: EventParser> Collector<T> {
         start_block: u64,
         db_client: DbClient,
     ) -> Self {
-        let filter = Filter::new().address(targets).from_block(start_block);
+        let filter = Filter::new().address(targets);
 
         Self {
             provider: Arc::new(provider),
             parser,
             filter,
+            start_block,
             db_client,
             live: Arc::new(AtomicBool::new(false)),
         }
@@ -95,18 +97,27 @@ impl<T: EventParser> Collector<T> {
     async fn process_past_logs(&self) -> anyhow::Result<()> {
         // Fetch current block number
         let finalized_block = self.provider.get_block_by_number(Finalized, Full).await?;
-        let finalized_block_number = finalized_block.unwrap().header.number;
+        let mut current_end_block = finalized_block.unwrap().header.number;
 
-        // Adjust filter to fetch logs up to the latest block
-        let filter = self.filter.clone().to_block(finalized_block_number);
+        while self.start_block < current_end_block {
+            let current_start_block = if current_end_block >= 99999 {
+                current_end_block - 99999
+            } else {
+                0
+            };
 
-        // Fetch logs
-        let logs = self.provider.get_logs(&filter).await?;
-        for log in logs {
-            let (event_data, match_id) = self.parser.parse_event(log.clone());
-            if !event_data.is_null() {
-                self.store_event(log, event_data, match_id).await;
+            let filter = self.filter.clone().from_block(current_start_block).to_block(current_end_block);
+
+            // Fetch logs
+            let logs = self.provider.get_logs(&filter).await?;
+            for log in logs {
+                let (event_data, match_id) = self.parser.parse_event(log.clone());
+                if !event_data.is_null() {
+                    self.store_event(log, event_data, match_id).await;
+                }
             }
+
+            current_end_block = current_start_block;
         }
         Ok(())
     }
