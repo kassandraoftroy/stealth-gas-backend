@@ -13,11 +13,11 @@ touch .env
 you need to fill out .env file (see .env.example)
 
 ```
-docker-compose build
+sudo docker-compose build
 ```
 
 ```
-docker-compose up -d db
+sudo docker-compose up -d db
 ```
 
 ```
@@ -29,15 +29,15 @@ scripts/setup.sh
 ```
 
 ```
-docker-compose up
+sudo docker-compose up
 ```
 
 ## Tear down
 
 ```
-docker-compose down
+sudo docker-compose down
 ```
 
 ```
-docker system prune -af
+sudo docker system prune -af
 ```

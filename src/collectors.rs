@@ -130,40 +130,58 @@ impl<T: EventParser> Collector<T> {
             .unwrap()
             .header
             .number;
-
+    
         loop {
-            // Fetch the most recent finalized block
-            let finalized_block = self
-                .provider
-                .get_block_by_number(Finalized, Full)
-                .await?
-                .unwrap()
-                .header
-                .number;
-
-            if finalized_block > last_finalized_block {
-                // Fetch logs for new blocks
-                let filter = self
-                    .filter
-                    .clone()
-                    .from_block(last_finalized_block - 64)
-                    .to_block(finalized_block); // Up to the most recent finalized block
-
-                let logs = self.provider.get_logs(&filter).await?;
-                for log in logs {
-                    let (event_data, match_id) = self.parser.parse_event(log.clone());
-
-                    if !event_data.is_null() {
-                        self.store_event(log, event_data, match_id).await;
+            match self.provider.get_block_by_number(Finalized, Full).await {
+                Ok(Some(finalized_block)) => {
+                    let finalized_block_number = finalized_block.header.number;
+    
+                    if finalized_block_number > last_finalized_block {
+                        let filter = self
+                            .filter
+                            .clone()
+                            .from_block(last_finalized_block.saturating_sub(64)) // Prevent underflow
+                            .to_block(finalized_block_number);
+    
+                        match self.provider.get_logs(&filter).await {
+                            Ok(logs) => {
+                                for log in logs {
+                                    let (event_data, match_id) = self.parser.parse_event(log.clone());
+    
+                                    if !event_data.is_null() {
+                                        self.store_event(log, event_data, match_id).await;
+                                    }
+                                }
+                                last_finalized_block = finalized_block_number;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[ERROR] Failed to fetch logs (retrying in 2s): {}",
+                                    e
+                                );
+                                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                                continue;
+                            }
+                        }
                     }
                 }
-
-                // Update the last finalized block
-                last_finalized_block = finalized_block;
-
-                // Sleep for 20 seconds before polling again
-                tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
+                Ok(None) => {
+                    eprintln!("[WARN] No finalized block found (retrying in 2s)");
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[ERROR] Failed to fetch latest finalized block (retrying in 2s): {}",
+                        e
+                    );
+                    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                    continue;
+                }
             }
+    
+            // Sleep before polling again
+            tokio::time::sleep(tokio::time::Duration::from_secs(20)).await;
         }
     }
 
